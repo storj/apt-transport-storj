@@ -73,7 +73,7 @@ func (m *Message) GetFieldValue(name string) (string, bool) {
 // when looking for a collection of fields with a given name from the same
 // Message, e.g. 'Config-Item'.
 func (m *Message) GetFieldList(name string) []*Field {
-	fields := []*Field{}
+	fields := make([]*Field, 1)
 	for _, f := range m.Fields {
 		if f.Name == name {
 			fields = append(fields, f)
@@ -147,7 +147,7 @@ func parseHeader(line string) (*Header, error) {
 }
 
 func parseFields(lines []string) []*Field {
-	fields := []*Field{}
+	fields := make([]*Field, len(lines))
 	for _, l := range lines {
 		fields = append(fields, parseField(l))
 	}

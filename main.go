@@ -21,6 +21,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -45,5 +46,5 @@ func main() {
 		os.Exit(0)
 	}
 
-	method.New().Run()
+	method.New().Run(context.Background())
 }

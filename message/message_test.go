@@ -40,11 +40,11 @@ Config-Item: Dir=/
 Config-Item: Unattended-Upgrade::Allowed-Origins::=${distro_id}:${distro_codename}-security
 `
 	acqMsg = `600 URI Acquire
-URI: s3://fake-key-id:fake-key-secret@s3.amazonaws.com/my-fake-s3-bucket/apt/generic/python-bernhard_0.2.3-1_all.deb
+URI: tardigrade://fakeaccessgrant/my-fake-bucket/apt/generic/python-bernhard_0.2.3-1_all.deb
 Filename: /var/cache/apt/archives/partial/python-bernhard_0.2.3-1_all.deb
 `
 	acqMsgNoSpaces = `600 URI Acquire
-URI:s3://my-s3-repository/project-a/dists/trusty/main/binary-amd64/Packages
+URI:tardigrade://fakeaccessgrant/project-a/dists/trusty/main/binary-amd64/Packages
 Filename:Packages.downloaded
 Fail-Ignore:true
 Index-File:true
@@ -130,7 +130,7 @@ func TestGetFieldList(t *testing.T) {
 func TestParseAcquireMsg(t *testing.T) {
 	m, err := FromBytes([]byte(acqMsg))
 	if err != nil {
-		t.Errorf("Failed to parse %s into a message", acqMsg)
+		t.Fatalf("Failed to parse %s into a message", acqMsg)
 	}
 
 	expectedCount := 2
@@ -173,7 +173,7 @@ func TestParseFieldsWithMissingSpaces(t *testing.T) {
 
 	field := m.Fields[0]
 	expectedName := "URI"
-	expectedVal := "s3://my-s3-repository/project-a/dists/trusty/main/binary-amd64/Packages"
+	expectedVal := "tardigrade://fakeaccessgrant/project-a/dists/trusty/main/binary-amd64/Packages"
 	if field.Name != expectedName {
 		t.Errorf("field.Name = %s; expected %s", field.Name, expectedName)
 	}

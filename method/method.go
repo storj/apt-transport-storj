@@ -21,6 +21,7 @@ package method
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -33,20 +34,15 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
-	"github.com/aws/aws-sdk-go/aws/endpoints"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3iface"
-	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/zeebo/errs"
+	"golang.org/x/sync/errgroup"
+	"storj.io/uplink"
 
 	"storj.io/apt-transport-tardigrade/message"
 )
@@ -94,52 +90,37 @@ const (
 )
 
 const (
-	fieldValueTrue       = "true"
-	fieldValueYes        = "yes"
-	fieldValueNotFound   = "The specified key does not exist."
-	fieldValueConnecting = "Connecting to s3.amazonaws.com"
-)
-
-const (
-	configItemAcquireS3Region = "Acquire::s3::region"
-	configItemAcquireS3Role   = "Acquire::s3::role"
-	s3Hostname                = "s3.amazonaws.com"
+	fieldValueNotFound = "The specified key does not exist."
 )
 
 // A Method implements the logic to process incoming apt messages and respond
 // accordingly.
 type Method struct {
-	region, roleARN string
-	msgChan         chan []byte
-	configured      bool
-	wg              *sync.WaitGroup
-	stdout          *log.Logger
+	msgChan       chan []byte
+	stdout        *log.Logger
+	clientMapLock sync.Mutex
+	ctx           context.Context
+	waitGroup     *errgroup.Group
+	storjClients  map[string]*uplink.Project
 }
 
 // New returns a new Method configured to read from os.Stdin and write to
 // os.Stdout.
 func New() *Method {
-	var wg sync.WaitGroup
-	wg.Add(1)
 	m := &Method{
-		region:     endpoints.UsEast1RegionID,
-		msgChan:    make(chan []byte),
-		configured: false,
-		wg:         &wg,
-		stdout:     log.New(os.Stdout, "", 0),
+		msgChan:      make(chan []byte),
+		stdout:       log.New(os.Stdout, "", 0),
+		storjClients: make(map[string]*uplink.Project),
 	}
-
 	return m
 }
 
 // Run flushes the Method's capabilities and then begins reading messages from
 // os.Stdin. Results are written to os.Stdout. The running Method waits for all
 // Messages to be processed before exiting.
-func (m *Method) Run() {
+func (m *Method) Run(ctx context.Context) {
 	m.flushCapabilities()
-	go m.readInput(os.Stdin)
-	go m.processMessages()
-	m.wg.Wait()
+	m.processMessages(ctx, os.Stdin)
 }
 
 func (m *Method) flushCapabilities() {
@@ -147,15 +128,22 @@ func (m *Method) flushCapabilities() {
 	m.stdout.Println(msg)
 }
 
-// readInput reads from the provided io.Reader and flushes each message to the
-// Method's Message channel for processing. It stops reading when io.Reader is
-// empty. Each message increments the Method's sync.WaitGroup by 1. Once all
-// messages have been read from the io.Reader, the Method's sync.WaitGroup is
-// decremented by 1. Each code path that processes a message is responsible for
-// decrementing the WaitGroup when the code path terminates.
-func (m *Method) readInput(input io.Reader) {
+func capabilities() *message.Message {
+	header := header(headerCodeCapabilities, headerDescriptionCapabilities)
+	fields := []*message.Field{
+		field(fieldNameSendConfig, "true"),
+		field(fieldNamePipeline, "true"),
+		field(fieldNameSingleInstance, "yes"),
+	}
+	return &message.Message{Header: header, Fields: fields}
+}
+
+// processMessages loops over the channel of Messages
+// and starts a goroutine to process each Message.
+func (m *Method) processMessages(ctx context.Context, input io.Reader) {
 	scanner := bufio.NewScanner(input)
 	buffer := &bytes.Buffer{}
+	waitGroup, ctx := errgroup.WithContext(ctx)
 	for {
 		hasLine := scanner.Scan()
 		if hasLine {
@@ -167,211 +155,138 @@ func (m *Method) readInput(input io.Reader) {
 			// comes in and the buffer already has some content, it's assuming that
 			// the buffer currently contains a complete message ready to be processed.
 			if len(trimmed) == 0 && buffer.Len() > 3 {
-				m.msgChan <- buffer.Bytes()
-				m.wg.Add(1)
+				waitGroup.Go(func() error {
+					m.handleBytes(ctx, buffer.Bytes())
+					return nil
+				})
 				buffer = &bytes.Buffer{}
 			}
 		} else {
 			break
 		}
 	}
-	m.wg.Done()
-}
-
-func capabilities() *message.Message {
-	header := header(headerCodeCapabilities, headerDescriptionCapabilities)
-	fields := []*message.Field{
-		field(fieldNameSendConfig, fieldValueTrue),
-		field(fieldNamePipeline, fieldValueTrue),
-		field(fieldNameSingleInstance, fieldValueYes),
-	}
-	return &message.Message{Header: header, Fields: fields}
-}
-
-// processMessages loops over the channel of Messages
-// and starts a goroutine to process each Message.
-func (m *Method) processMessages() {
-	for {
-		bytes := <-m.msgChan
-		go m.handleBytes(bytes)
+	err := waitGroup.Wait()
+	if err != nil {
+		m.outputGeneralFailure(err)
 	}
 }
 
 // handleBytes initializes a new Message and dispatches it according to
 // the Message.Header.Status value.
-func (m *Method) handleBytes(b []byte) {
+func (m *Method) handleBytes(ctx context.Context, b []byte) {
 	msg, err := message.FromBytes(b)
-	m.handleError(err)
+	if err != nil {
+		m.outputGeneralFailure(err)
+		return
+	}
 	if msg.Header.Status == headerCodeURIAcquire {
 		// URI Acquire message
-		m.uriAcquire(msg)
-	} else if msg.Header.Status == headerCodeConfiguration {
-		// Configuration message
-		m.configure(msg)
-	}
-}
-
-// waitForConfiguration ensures that the configuration Message from APT
-// has been fully processed before continuing.
-func (m *Method) waitForConfiguration() {
-	for {
-		if m.configured {
+		err := m.uriAcquire(ctx, msg)
+		if err != nil {
+			m.outputGeneralFailure(err)
 			return
 		}
-		time.Sleep(1 * time.Millisecond)
+	} else if msg.Header.Status == headerCodeConfiguration {
+		m.outputGeneralFailure(errors.New("we don't need no configuration"))
 	}
 }
 
-// A objectLocation wraps details about the requested items location in S3
-type objectLocation struct {
-	uri    *url.URL
-	bucket string
-	key    string
-}
+func (m *Method) getClient(ctx context.Context, grant string) (_ *uplink.Project, err error) {
+	m.clientMapLock.Lock()
+	defer m.clientMapLock.Unlock()
 
-func newLocation(value string) (objectLocation, error) {
-	uri, err := url.Parse(value)
-	if err != nil {
-		return objectLocation{}, err
-	}
-	if uri.Host == s3Hostname {
-		tokens := strings.Split(uri.Path, "/")
-
-		// splitting "/bucket/this/is/a/path" on "/" produces
-		// ["", "bucket", "this", "is", "a", "path"]
-		// Note the initial empty string
-		if len(tokens) < 3 {
-			return objectLocation{}, errors.New("location missing required number of tokens")
+	client, ok := m.storjClients[grant]
+	if !ok {
+		client, err = m.storjClient(ctx, grant)
+		if err != nil {
+			return nil, err
 		}
-
-		// the first non-zero length string is assumed to be the bucket. the rest are
-		// concatenated back together as the path to the object in the bucket
-		return objectLocation{
-			uri:    uri,
-			bucket: tokens[1],
-			key:    strings.Join(tokens[2:], "/"),
-		}, nil
+		m.storjClients[grant] = client
 	}
+	return client, nil
+}
 
-	if strings.HasSuffix(uri.Host, s3Hostname) {
-		return objectLocation{
-			uri:    uri,
-			bucket: strings.TrimSuffix(uri.Host, "."+s3Hostname),
-			key:    uri.Path[1:],
-		}, nil
+func uriParse(uri string) (accessGrant, bucket, objectKey string, err error) {
+	uriObject, err := url.Parse(uri)
+	if err != nil {
+		return "", "", "", err
 	}
-
-	return objectLocation{
-		uri:    uri,
-		bucket: uri.Host,
-		key:    uri.Path[1:],
-	}, nil
+	pathParts := filepath.SplitList(uriObject.RawPath)
+	if len(pathParts) < 2 {
+		return "", "", "", fmt.Errorf("invalid Tardigrade source URI %q", uri)
+	}
+	bucket = pathParts[0]
+	objectKey = strings.Join(pathParts[1:], "/")
+	return uriObject.Host, bucket, objectKey, nil
 }
 
 // uriAcquire downloads and stores objects from S3 based on the contents
 // of the provided Message.
-func (m *Method) uriAcquire(msg *message.Message) {
-	m.waitForConfiguration()
+func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) error {
 	uri, hasField := msg.GetFieldValue(fieldNameURI)
 	if !hasField {
-		m.handleError(errors.New("acquire message missing required field: URI"))
+		return errors.New("acquire message missing required field: URI")
 	}
-	ol, err := newLocation(uri)
-	m.handleError(err)
-
-	m.outputRequestStatus(ol.uri, fieldValueConnecting)
-
-	client := m.s3Client(ol.uri.User)
-
-	headObjectInput := &s3.HeadObjectInput{Bucket: &ol.bucket, Key: &ol.key}
-	headObjectOutput, err := client.HeadObject(headObjectInput)
+	grant, bucket, path, err := uriParse(uri)
 	if err != nil {
-		if reqErr, ok := err.(awserr.RequestFailure); ok {
-			if reqErr.StatusCode() == 404 {
-				m.outputNotFound(ol.uri)
-				return
-			}
-			// if the error is an awserr.RequestFailure, but the status was not 404
-			// handle the error
-			m.handleError(err)
-		} else {
-			m.handleError(err)
-		}
+		return err
+	}
+	client, err := m.getClient(ctx, grant)
+	if err != nil {
+		return err
 	}
 
-	expectedLen := *headObjectOutput.ContentLength
-	lastModified := *headObjectOutput.LastModified
-	m.outputURIStart(ol.uri, expectedLen, lastModified)
+	download, err := client.DownloadObject(ctx, bucket, path, nil)
+	if err != nil {
+		return err
+	}
+	downloadInfo := download.Info()
+	expectedLen := downloadInfo.System.ContentLength
+	lastModified := downloadInfo.System.Created
+	if err := m.outputURIStart(uri, expectedLen, lastModified); err != nil {
+		return err
+	}
 
 	filename, hasField := msg.GetFieldValue(fieldNameFilename)
 	if !hasField {
-		m.handleError(errors.New("acquire message missing required field: Filename"))
+		return errors.New("acquire message missing required field: Filename")
 	}
 	file, err := os.Create(filename)
-	m.handleError(err)
-	defer file.Close()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		err = errs.Combine(err, file.Close())
+	}()
 
-	downloader := s3manager.NewDownloaderWithClient(client)
-	numBytes, err := downloader.Download(file,
-		&s3.GetObjectInput{
-			Bucket: aws.String(ol.bucket),
-			Key:    aws.String(ol.key),
-		})
-	m.handleError(err)
-
-	m.outputURIDone(ol.uri, numBytes, lastModified, filename)
+	numBytes, err := io.Copy(file, download)
+	if err != nil {
+		return err
+	}
+	if err := m.outputURIDone(uri, numBytes, lastModified, filename); err != nil {
+		return err
+	}
+	return nil
 }
 
-// s3Client provides an initialized s3iface.S3API based on the contents of the
-// provided url.URL. The access key id and secret access key are assumed to
-// correspond to the Username() and Password() functions on the URL's User.
-func (m *Method) s3Client(user *url.Userinfo) s3iface.S3API {
-	sess := session.Must(session.NewSession())
-	config := &aws.Config{
-		Region: aws.String(m.region),
+// storjClient provides an initialized client blah blah
+func (m *Method) storjClient(ctx context.Context, grant string) (*uplink.Project, error) {
+	access, err := uplink.ParseAccess(grant)
+	if err != nil {
+		return nil, err
 	}
-	if accessKeyID := user.Username(); accessKeyID != "" {
-		// Use explicity-specified static credentials to access S3
-		if secretAccessKey, ok := user.Password(); ok {
-			config.Credentials = credentials.NewStaticCredentials(accessKeyID, secretAccessKey, "")
-		} else {
-			m.handleError(errors.New("acquire message missing required value: Password"))
-		}
-	} else if m.roleARN != "" {
-		// Use default credential chain to assume specified role
-		config.Credentials = stscreds.NewCredentials(sess, m.roleARN)
-	}
-	return s3.New(sess, config)
-}
-
-// configure loops though the Config-Item fields of a configuration Message and
-// sets the appropriate state on the Method based on the field values. Once the
-// configuration has been applied, the Method's sync.WaitGroup is decremented
-// by 1.
-func (m *Method) configure(msg *message.Message) {
-	items := msg.GetFieldList(fieldNameConfigItem)
-	for _, f := range items {
-		config := strings.Split(f.Value, "=")
-		switch config[0] {
-		case configItemAcquireS3Region:
-			m.region = config[1]
-		case configItemAcquireS3Role:
-			m.roleARN = config[1]
-		}
-	}
-	m.configured = true
-	m.wg.Done()
+	return uplink.OpenProject(ctx, access)
 }
 
 // requestStatus constructs a Message that when printed looks like the
 // following example:
 //
 // 102 Status
-// URI: s3://fake-access-key-id:fake-secret-access-key@s3.amazonaws.com/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
-// Message: Connecting to s3.amazonaws.com
-func requestStatus(s3Uri *url.URL, status string) *message.Message {
+// URI: tardigrade://fake-serialized-access/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
+// Message: Connecting to $satellite
+func requestStatus(objectURI, status string) *message.Message {
 	h := header(headerCodeStatus, headerDescriptionStatus)
-	uriField := field(fieldNameURI, s3Uri.String())
+	uriField := field(fieldNameURI, objectURI)
 	messageField := field(fieldNameMessage, status)
 	return &message.Message{Header: h, Fields: []*message.Field{uriField, messageField}}
 }
@@ -380,22 +295,25 @@ func requestStatus(s3Uri *url.URL, status string) *message.Message {
 // example:
 //
 // 200 URI Start
-// URI: s3://fake-access-key-id:fake-secret-access-key@s3.amazonaws.com/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
+// URI: tardigrade://fake-serialized-access/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
 // Size: 9012
 // Last-Modified: Thu, 25 Oct 2018 20:17:39 GMT
-func (m *Method) uriStart(s3Uri *url.URL, size int64, t time.Time) *message.Message {
+func (m *Method) uriStart(objectURI string, size int64, t time.Time) (*message.Message, error) {
 	h := header(headerCodeURIStart, headerDescriptionURIStart)
-	uriField := field(fieldNameURI, s3Uri.String())
+	uriField := field(fieldNameURI, objectURI)
 	sizeField := field(fieldNameSize, strconv.FormatInt(size, 10))
-	lmField := m.lastModified(t)
-	return &message.Message{Header: h, Fields: []*message.Field{uriField, sizeField, lmField}}
+	lmField, err := m.lastModified(t)
+	if err != nil {
+		return nil, err
+	}
+	return &message.Message{Header: h, Fields: []*message.Field{uriField, sizeField, lmField}}, nil
 }
 
 // uriDone constructs a Message that when printed looks like the following
 // example:
 //
 // 201 URI Done
-// URI: s3://fake-access-key-id:fake-secret-access-key@s3.amazonaws.com/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
+// URI: tardigrade://fake-serialized-access/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
 // Filename: /var/cache/apt/archives/partial/riemann-sumd_0.7.2-1_all.deb
 // Size: 9012
 // Last-Modified: Thu, 25 Oct 2018 20:17:39 GMT
@@ -404,27 +322,52 @@ func (m *Method) uriStart(s3Uri *url.URL, size int64, t time.Time) *message.Mess
 // SHA1-Hash: 0d02ab49503be20d153cea63a472c43ebfad2efc
 // SHA256-Hash: 92a3f70eb1cf2c69880988a8e74dc6fea7e4f15ee261f74b9be55c866f69c64b
 // SHA512-Hash: ab3b1c94618cb58e2147db1c1d4bd3472f17fb11b1361e77216b461ab7d5f5952a5c6bb0443a1507d8ca5ef1eb18ac7552d0f2a537a0d44b8612d7218bf379fb
-func (m *Method) uriDone(s3Uri *url.URL, size int64, t time.Time, filename string) *message.Message {
+func (m *Method) uriDone(objectURI string, size int64, t time.Time, filename string) (*message.Message, error) {
 	h := header(headerCodeURIDone, headerDescriptionURIDone)
-	uriField := field(fieldNameURI, s3Uri.String())
+	uriField := field(fieldNameURI, objectURI)
 	filenameField := field(fieldNameFilename, filename)
 	sizeField := field(fieldNameSize, strconv.FormatInt(size, 10))
-	lmField := m.lastModified(t)
+	lmField, err := m.lastModified(t)
+	if err != nil {
+		return nil, err
+	}
 	fileBytes, err := ioutil.ReadFile(filename)
-	m.handleError(err)
+	if err != nil {
+		return nil, err
+	}
 
+	md5Field, err := m.md5Field(fileBytes)
+	if err != nil {
+		return nil, err
+	}
+	md5SumField, err := m.md5SumField(fileBytes)
+	if err != nil {
+		return nil, err
+	}
+	sha1Field, err := m.sha1Field(fileBytes)
+	if err != nil {
+		return nil, err
+	}
+	sha256Field, err := m.sha256Field(fileBytes)
+	if err != nil {
+		return nil, err
+	}
+	sha512Field, err := m.sha512Field(fileBytes)
+	if err != nil {
+		return nil, err
+	}
 	fields := []*message.Field{
 		uriField,
 		filenameField,
 		sizeField,
 		lmField,
-		m.md5Field(fileBytes),
-		m.md5SumField(fileBytes),
-		m.sha1Field(fileBytes),
-		m.sha256Field(fileBytes),
-		m.sha512Field(fileBytes),
+		md5Field,
+		md5SumField,
+		sha1Field,
+		sha256Field,
+		sha512Field,
 	}
-	return &message.Message{Header: h, Fields: fields}
+	return &message.Message{Header: h, Fields: fields}, nil
 }
 
 // notFound constructs a Message that when printed looks like the following
@@ -432,23 +375,12 @@ func (m *Method) uriDone(s3Uri *url.URL, size int64, t time.Time, filename strin
 //
 // 400 URI Failure
 // Message: The specified key does not exist.
-// URI: s3://fake-access-key-id:fake-secret-access-key@s3.amazonaws.com/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
-func notFound(s3Uri *url.URL) *message.Message {
+// URI: tardigrade://fake-serialized-access/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
+func notFound(objectURI string) *message.Message {
 	h := header(headerCodeURIFailure, headerDescriptionURIFailure)
-	uriField := field(fieldNameURI, s3Uri.String())
+	uriField := field(fieldNameURI, objectURI)
 	messageField := field(fieldNameMessage, fieldValueNotFound)
 	return &message.Message{Header: h, Fields: []*message.Field{uriField, messageField}}
-}
-
-// generalLog constructs a Message that when printed looks like the following
-// example:
-//
-// 101 Log
-// Message: Set the s3 region to us-west-1 based on Config-Item Acquire::s3:region.
-func generalLog(status string) *message.Message {
-	h := header(headerCodeGeneralLog, headerDescriptionGeneralLog)
-	messageField := field(fieldNameMessage, status)
-	return &message.Message{Header: h, Fields: []*message.Field{messageField}}
 }
 
 // generalFailure constructs a Message that when printed looks like the
@@ -463,49 +395,41 @@ func generalFailure(err error) *message.Message {
 	return &message.Message{Header: h, Fields: []*message.Field{messageField}}
 }
 
-func (m *Method) outputRequestStatus(s3Uri *url.URL, status string) {
-	msg := requestStatus(s3Uri, status)
+func (m *Method) outputRequestStatus(objectURI, status string) error {
+	msg := requestStatus(objectURI, status)
 	m.stdout.Println(msg.String())
+	return nil
 }
 
-func (m *Method) outputGeneralLog(status string) {
-	msg := generalLog(status)
+func (m *Method) outputURIStart(objectURI string, size int64, lastModified time.Time) error {
+	msg, err := m.uriStart(objectURI, size, lastModified)
+	if err != nil {
+		return err
+	}
 	m.stdout.Println(msg.String())
+	return nil
 }
 
-func (m *Method) outputURIStart(s3Uri *url.URL, size int64, lastModified time.Time) {
-	msg := m.uriStart(s3Uri, size, lastModified)
+// outputURIDone prints a message including the details of the finished URI.
+func (m *Method) outputURIDone(objectURI string, size int64, lastModified time.Time, filename string) error {
+	msg, err := m.uriDone(objectURI, size, lastModified, filename)
+	if err != nil {
+		return err
+	}
 	m.stdout.Println(msg.String())
+	return nil
 }
 
-// outputURIDone prints a message including the details of the finished URI,
-// and subsequently decrements the Method's sync.WaitGroup by 1.
-func (m *Method) outputURIDone(s3Uri *url.URL, size int64, lastModified time.Time, filename string) {
-	msg := m.uriDone(s3Uri, size, lastModified, filename)
+// outputNotFound prints a message including the details of the URI that could
+// not be found.
+func (m *Method) outputNotFound(objectURI string) {
+	msg := notFound(objectURI)
 	m.stdout.Println(msg.String())
-	m.wg.Done()
-}
-
-// outputURIDone prints a message including the details of the URI that could
-// not be found, and subsequently decrements the Method's sync.WaitGroup by 1.
-func (m *Method) outputNotFound(s3Uri *url.URL) {
-	msg := notFound(s3Uri)
-	m.stdout.Println(msg.String())
-	m.wg.Done()
 }
 
 func (m *Method) outputGeneralFailure(err error) {
 	msg := generalFailure(err)
 	m.stdout.Println(msg.String())
-}
-
-// handleError writes the contents of the given error and then exits the
-// program, as specified in the APT method interface documentation.
-func (m *Method) handleError(err error) {
-	if err != nil {
-		m.outputGeneralFailure(err)
-		os.Exit(1)
-	}
 }
 
 func header(code int, description string) *message.Header {
@@ -518,49 +442,67 @@ func field(name string, value string) *message.Field {
 
 // lastModified returns a Field with the given Time formatted using the RFC1123
 // specification in GMT, as specified in the APT method interface documentation.
-func (m *Method) lastModified(t time.Time) *message.Field {
+func (m *Method) lastModified(t time.Time) (*message.Field, error) {
 	gmt, err := time.LoadLocation("GMT")
-	m.handleError(err)
-	return field(fieldNameLastModified, t.In(gmt).Format(time.RFC1123))
-}
-
-func (m *Method) md5Field(bytes []byte) *message.Field {
-	md5 := md5.New()
-	md5String := m.computeHash(md5, bytes)
-	return field(fieldNameMD5Hash, md5String)
-}
-
-func (m *Method) md5SumField(bytes []byte) *message.Field {
-	md5 := md5.New()
-	md5String := m.computeHash(md5, bytes)
-	return field(fieldNameMD5SumHash, md5String)
-}
-
-func (m *Method) sha1Field(bytes []byte) *message.Field {
-	sha1 := sha1.New()
-	sha1String := m.computeHash(sha1, bytes)
-	return field(fieldNameSHA1Hash, sha1String)
-}
-
-func (m *Method) sha256Field(bytes []byte) *message.Field {
-	sha256 := sha256.New()
-	sha256String := m.computeHash(sha256, bytes)
-	return field(fieldNameSHA256Hash, sha256String)
-}
-
-func (m *Method) sha512Field(bytes []byte) *message.Field {
-	sha512 := sha512.New()
-	sha512String := m.computeHash(sha512, bytes)
-	return field(fieldNameSHA512Hash, sha512String)
-}
-
-func (m *Method) computeHash(h hash.Hash, fileBytes []byte) string {
-	m.prepareHash(h, fileBytes)
-	return fmt.Sprintf("%x", h.Sum(nil))
-}
-
-func (m *Method) prepareHash(h hash.Hash, fileBytes []byte) {
-	if _, err := io.Copy(h, bytes.NewReader(fileBytes)); err != nil {
-		m.handleError(err)
+	if err != nil {
+		return nil, err
 	}
+	return field(fieldNameLastModified, t.In(gmt).Format(time.RFC1123)), nil
+}
+
+func (m *Method) md5Field(bytes []byte) (*message.Field, error) {
+	md5Hash := md5.New()
+	md5String, err := m.computeHash(md5Hash, bytes)
+	if err != nil {
+		return nil, err
+	}
+	return field(fieldNameMD5Hash, md5String), nil
+}
+
+func (m *Method) md5SumField(bytes []byte) (*message.Field, error) {
+	md5Hash := md5.New()
+	md5String, err := m.computeHash(md5Hash, bytes)
+	if err != nil {
+		return nil, err
+	}
+	return field(fieldNameMD5SumHash, md5String), nil
+}
+
+func (m *Method) sha1Field(bytes []byte) (*message.Field, error) {
+	sha1Hash := sha1.New()
+	sha1String, err := m.computeHash(sha1Hash, bytes)
+	if err != nil {
+		return nil, err
+	}
+	return field(fieldNameSHA1Hash, sha1String), nil
+}
+
+func (m *Method) sha256Field(bytes []byte) (*message.Field, error) {
+	sha256Hash := sha256.New()
+	sha256String, err := m.computeHash(sha256Hash, bytes)
+	if err != nil {
+		return nil, err
+	}
+	return field(fieldNameSHA256Hash, sha256String), nil
+}
+
+func (m *Method) sha512Field(bytes []byte) (*message.Field, error) {
+	sha512Hash := sha512.New()
+	sha512String, err := m.computeHash(sha512Hash, bytes)
+	if err != nil {
+		return nil, err
+	}
+	return field(fieldNameSHA512Hash, sha512String), nil
+}
+
+func (m *Method) computeHash(h hash.Hash, fileBytes []byte) (string, error) {
+	if err := m.prepareHash(h, fileBytes); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+func (m *Method) prepareHash(h hash.Hash, fileBytes []byte) error {
+	_, err := io.Copy(h, bytes.NewReader(fileBytes))
+	return err
 }

@@ -1,4 +1,5 @@
 // Copyright 2018 Google LLC
+// Copyright (C) 2020 Storj Labs, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -47,7 +48,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 
-	"github.com/google/apt-golang-s3/message"
+	"storj.io/apt-transport-tardigrade/message"
 )
 
 const (

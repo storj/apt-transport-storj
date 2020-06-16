@@ -34,7 +34,7 @@ import (
 	"log"
 	"net/url"
 	"os"
-	"path/filepath"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -155,8 +155,9 @@ func (m *Method) processMessages(ctx context.Context, input io.Reader) {
 			// comes in and the buffer already has some content, it's assuming that
 			// the buffer currently contains a complete message ready to be processed.
 			if len(trimmed) == 0 && buffer.Len() > 3 {
+				gotBytes := buffer.Bytes()
 				waitGroup.Go(func() error {
-					m.handleBytes(ctx, buffer.Bytes())
+					m.handleBytes(ctx, gotBytes)
 					return nil
 				})
 				buffer = &bytes.Buffer{}
@@ -211,13 +212,15 @@ func uriParse(uri string) (accessGrant, bucket, objectKey string, err error) {
 	if err != nil {
 		return "", "", "", err
 	}
-	pathParts := filepath.SplitList(uriObject.RawPath)
+	cleanPath := path.Clean(uriObject.Path)
+	pathParts := strings.Split(strings.TrimLeft(cleanPath, "/"), "/")
 	if len(pathParts) < 2 {
-		return "", "", "", fmt.Errorf("invalid Tardigrade source URI %q", uri)
+		return "", "", "", fmt.Errorf("invalid Tardigrade source URI %q, %v", uri, pathParts)
 	}
-	bucket = pathParts[0]
-	objectKey = strings.Join(pathParts[1:], "/")
-	return uriObject.Host, bucket, objectKey, nil
+	bucket = pathParts[1]
+	objectKey = strings.Join(pathParts[2:], "/")
+	host := uriObject.Host + pathParts[0]
+	return host, bucket, objectKey, nil
 }
 
 // uriAcquire downloads and stores objects from S3 based on the contents

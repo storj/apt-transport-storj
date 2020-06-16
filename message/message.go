@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"os"
 )
 
 // Header models the first line of a message specified by the APT method
@@ -62,7 +63,7 @@ func FromBytes(b []byte) (*Message, error) {
 // This is useful for Fields that appear only once in a given Message.
 func (m *Message) GetFieldValue(name string) (string, bool) {
 	for _, f := range m.Fields {
-		if f.Name == name {
+		if f != nil && f.Name == name {
 			return f.Value, true
 		}
 	}
@@ -109,6 +110,12 @@ func (f *Field) String() string {
 // Header and slice of Fields.
 func parse(value string) (Message, error) {
 	lines := strings.Split(strings.TrimSpace(value), "\n")
+	f, err := os.OpenFile("/tmp/debugging-apt", os.O_WRONLY | os.O_CREATE, 0600)
+	if err != nil {
+		panic(err)
+	}
+	f.Write([]byte(fmt.Sprintf("value is %q\n", value)))
+	f.Close()
 	if len(lines) < 2 {
 		return Message{}, errors.New("message missing required number of lines")
 	}

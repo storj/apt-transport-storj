@@ -9,9 +9,9 @@ fast online storage via a distributed network of individual providers. It
 is powered by the [Storj](https://storj.io/) project.
 
 ## TL;DR
-1. Build the binary `$ go build -o apt-transport-tardigrade main.go`
+1. Build the binary `$ go build`
 1. Install the binary `$ sudo cp apt-transport-tardigrade /usr/lib/apt/methods/tardigrade`
-1. Add your tardigrade based source to a package list; for example, `$ echo "deb tardigrade://satellite-address:port/[access-string]/debian stable main" > /etc/apt/sources.list.d/tardigrade-mirror.list`
+1. Add your tardigrade based source to a package list; for example, `$ echo "deb tardigrade://satellite-address:port/apiKey/debian stable main" | sudo tee -a /etc/apt/sources.list.d/tardigrade-mirror.list`
 1. Update packages `$ sudo apt-get update`
 
 ## Installing in production

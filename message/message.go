@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"os"
 )
 
 // Header models the first line of a message specified by the APT method
@@ -74,7 +73,7 @@ func (m *Message) GetFieldValue(name string) (string, bool) {
 // when looking for a collection of fields with a given name from the same
 // Message, e.g. 'Config-Item'.
 func (m *Message) GetFieldList(name string) []*Field {
-	fields := make([]*Field, 1)
+	fields := make([]*Field, 0, 1)
 	for _, f := range m.Fields {
 		if f.Name == name {
 			fields = append(fields, f)
@@ -110,12 +109,6 @@ func (f *Field) String() string {
 // Header and slice of Fields.
 func parse(value string) (Message, error) {
 	lines := strings.Split(strings.TrimSpace(value), "\n")
-	f, err := os.OpenFile("/tmp/debugging-apt", os.O_WRONLY | os.O_CREATE, 0600)
-	if err != nil {
-		panic(err)
-	}
-	f.Write([]byte(fmt.Sprintf("value is %q\n", value)))
-	f.Close()
 	if len(lines) < 2 {
 		return Message{}, errors.New("message missing required number of lines")
 	}
@@ -154,7 +147,7 @@ func parseHeader(line string) (*Header, error) {
 }
 
 func parseFields(lines []string) []*Field {
-	fields := make([]*Field, len(lines))
+	fields := make([]*Field, 0, len(lines))
 	for _, l := range lines {
 		fields = append(fields, parseField(l))
 	}

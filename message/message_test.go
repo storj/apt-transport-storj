@@ -16,7 +16,11 @@
 package message
 
 import (
+	"net/url"
+	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -38,13 +42,16 @@ Config-Item: DPkg::Pre-Install-Pkgs::=/usr/sbin/dpkg-preconfigure%20--apt%20||%2
 Config-Item: Dir::State=var/lib/apt/
 Config-Item: Dir=/
 Config-Item: Unattended-Upgrade::Allowed-Origins::=${distro_id}:${distro_codename}-security
+Config-Item: APT::Compressor::lzma::UncompressArg::=--format%3dlzma
 `
+	lzmaUncompressArgDecoded = `--format=lzma`
+
 	acqMsg = `600 URI Acquire
-URI: tardigrade://fakeaccessgrant/my-fake-bucket/apt/generic/python-bernhard_0.2.3-1_all.deb
+URI: tardigrade://satellite.tardigrade.io:1234/fakeapikey/my-fake-bucket/apt/generic/python-bernhard_0.2.3-1_all.deb
 Filename: /var/cache/apt/archives/partial/python-bernhard_0.2.3-1_all.deb
 `
 	acqMsgNoSpaces = `600 URI Acquire
-URI:tardigrade://fakeaccessgrant/project-a/dists/trusty/main/binary-amd64/Packages
+URI:tardigrade://satellite.tardigrade.io:1234/fakeapikey/project-a/dists/trusty/main/binary-amd64/Packages
 Filename:Packages.downloaded
 Fail-Ignore:true
 Index-File:true
@@ -60,29 +67,32 @@ func TestMessageString(t *testing.T) {
 	}
 	m := &Message{Header: h, Fields: f}
 
-	actual := m.String()
-	if actual != fakeMsg {
-		t.Errorf("m.String() = %s; expected %s", actual, fakeMsg)
-	}
+	require.Equal(t, fakeMsg, m.String())
 }
 
 func TestParseConfigurationMsg(t *testing.T) {
 	m, err := FromBytes([]byte(configMsg))
-	if err != nil {
-		t.Errorf("Failed to parse %s into a message", configMsg)
-	}
+	require.NoErrorf(t, err, "failed to parse %q into a message", configMsg)
 
-	expectedCount := 12
-	count := len(m.Fields)
-	if count != expectedCount {
-		t.Errorf("Expected Fields to contain %d items, but had %d", expectedCount, count)
-	}
+	require.Len(t, m.Fields, 13)
+	require.Equal(t, "Config-Item: APT::Architecture=amd64", m.Fields[0].String())
 
-	expected := "Config-Item: APT::Architecture=amd64"
-	actual := m.Fields[0].String()
-	if actual != expected {
-		t.Errorf("String() = %s;  expected: %s", actual, expected)
+	fields := m.GetFieldList("Config-Item")
+	require.Len(t, fields, 13)
+
+	configKey := "APT::Compressor::lzma::UncompressArg::"
+	found := false
+	for _, f := range fields {
+		parts := strings.Split(f.Value, "=")
+		require.Len(t, parts, 2)
+		if parts[0] == configKey {
+			found = true
+			value, err := url.PathUnescape(parts[1])
+			require.NoError(t, err)
+			require.Equal(t, lzmaUncompressArgDecoded, value)
+		}
 	}
+	require.True(t, found, "Did not find config item DPkg::Post-Invoke::")
 }
 
 func TestGetFieldValue(t *testing.T) {
@@ -94,21 +104,15 @@ func TestGetFieldValue(t *testing.T) {
 	}
 	m := &Message{Header: h, Fields: f}
 
-	actual, _ := m.GetFieldValue("Foo")
-	expected := "bar"
-	if actual != expected {
-		t.Errorf("m.GetFieldValue(\"Foo\") = %s; expected: %s", actual, expected)
-	}
-	actual, _ = m.GetFieldValue("Baz")
-	expected = "qux"
-	if actual != expected {
-		t.Errorf("m.GetFieldValue(\"Baz\") = %s; expected: %s", actual, expected)
-	}
-	actual, _ = m.GetFieldValue("Filename")
-	expected = "apt-transport.deb"
-	if actual != expected {
-		t.Errorf("m.GetFieldValue(\"Filename\") = %s; expected: %s", actual, expected)
-	}
+	actual, present := m.GetFieldValue("Foo")
+	require.True(t, present, "No Foo field found")
+	require.Equal(t, "bar", actual)
+	actual, present = m.GetFieldValue("Baz")
+	require.True(t, present, "No Baz field found")
+	require.Equal(t, "qux", actual)
+	actual, present = m.GetFieldValue("Filename")
+	require.True(t, present, "No Filename field found")
+	require.Equal(t, "apt-transport.deb", actual)
 }
 
 func TestGetFieldList(t *testing.T) {
@@ -120,64 +124,28 @@ func TestGetFieldList(t *testing.T) {
 	}
 	m := &Message{Header: h, Fields: f}
 
-	actualLength := len(m.GetFieldList("Config-Item"))
-	expectedLength := 2
-	if actualLength != expectedLength {
-		t.Errorf("Incorrect number of fields '%d' expected: %d", actualLength, expectedLength)
-	}
+	require.Len(t, m.GetFieldList("Config-Item"), 2)
 }
 
 func TestParseAcquireMsg(t *testing.T) {
 	m, err := FromBytes([]byte(acqMsg))
-	if err != nil {
-		t.Fatalf("Failed to parse %s into a message", acqMsg)
-	}
+	require.NoErrorf(t, err, "Failed to parse %q into a message", acqMsg)
+	require.Len(t, m.Fields, 2)
 
-	expectedCount := 2
-	count := len(m.Fields)
-	if count != expectedCount {
-		t.Errorf("Found %d fields; expected %d", count, expectedCount)
-	}
+	require.Equal(t, 600, m.Header.Status)
+	require.Equal(t, "URI Acquire", m.Header.Description)
 
-	status := m.Header.Status
-	expected := 600
-	if status != expected {
-		t.Errorf("Status = %d; expected %d", status, expected)
-	}
-
-	description := m.Header.Description
-	expectedDesc := "URI Acquire"
-	if description != expectedDesc {
-		t.Errorf("Description = %s; expected %s", description, expectedDesc)
-	}
-
-	value, _ := m.GetFieldValue("Filename")
-	expectedVal := "/var/cache/apt/archives/partial/python-bernhard_0.2.3-1_all.deb"
-
-	if value != expectedVal {
-		t.Errorf("m.GetFieldValue(\"Filename\") = %s; expected %s", value, expectedVal)
-	}
+	value, present := m.GetFieldValue("Filename")
+	require.True(t, present)
+	require.Equal(t, "/var/cache/apt/archives/partial/python-bernhard_0.2.3-1_all.deb", value)
 }
 
 func TestParseFieldsWithMissingSpaces(t *testing.T) {
 	m, err := FromBytes([]byte(acqMsgNoSpaces))
-	if err != nil {
-		t.Errorf("Failed to parse %s into a message", acqMsgNoSpaces)
-	}
-
-	count := len(m.Fields)
-	expected := 4
-	if count != expected {
-		t.Errorf("len(m.Fields) = %d; expected %d", count, expected)
-	}
+	require.NoErrorf(t, err, "Failed to parse %q into a message", acqMsgNoSpaces)
+	require.Len(t, m.Fields, 4)
 
 	field := m.Fields[0]
-	expectedName := "URI"
-	expectedVal := "tardigrade://fakeaccessgrant/project-a/dists/trusty/main/binary-amd64/Packages"
-	if field.Name != expectedName {
-		t.Errorf("field.Name = %s; expected %s", field.Name, expectedName)
-	}
-	if field.Value != expectedVal {
-		t.Errorf("field.Value = %s; expected %s", field.Value, expectedVal)
-	}
+	require.Equal(t, "URI", field.Name)
+	require.Equal(t, "tardigrade://satellite.tardigrade.io:1234/fakeapikey/project-a/dists/trusty/main/binary-amd64/Packages", field.Value)
 }

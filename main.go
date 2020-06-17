@@ -28,10 +28,7 @@ import (
 	"runtime"
 
 	"storj.io/apt-transport-tardigrade/method"
-)
-
-const (
-	version = "0.0.1"
+	"storj.io/apt-transport-tardigrade/version"
 )
 
 var (
@@ -42,7 +39,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("apt-transport-tardigrade %s (Go version: %s)\n", version, runtime.Version())
+		fmt.Printf("apt-transport-tardigrade %s (Go version: %s)\n", version.Version, runtime.Version())
 		os.Exit(0)
 	}
 

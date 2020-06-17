@@ -16,7 +16,11 @@
 package method
 
 import (
+	"context"
+	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -24,17 +28,6 @@ const (
 Send-Config: true
 Pipeline: true
 Single-Instance: yes
-`
-
-	// The trailing blank line is intentional
-	acqMsg = `600 URI Acquire
-URI: tardigrade://thisisnotreallyanaccessgrant/apt-repo-bucket/apt/generic/python-bernhard_0.2.3-1_all.deb
-Filename: /tmp/python-bernhard_0.2.3-1_all.deb
-
-600 URI Acquire
-URI: tardigrade://thisisnotreallyanaccessgrant/apt-repo-bucket/apt/generic/riemann-sumd_0.7.2-1_all.deb
-Filename: /tmp/riemann-sumd_0.7.2-1_all.deb
-
 `
 
 	// The trailing blank line is intentional
@@ -46,13 +39,20 @@ Config-Item: Dir::Ignore-Files-Silently::=~$
 Config-Item: Acquire::cdrom::mount=/media/cdrom
 Config-Item: Aptitude::Get-Root-Command=sudo:/usr/bin/sudo
 Config-Item: Unattended-Upgrade::Allowed-Origins::=${distro_id}:${distro_codename}-security
+Config-Item: Acquire::Tardigrade::EncryptionPassphrase=AS%2A%20XDRF%2A%26U
 
 `
 )
 
 func TestCapabilities(t *testing.T) {
-	actual := capabilities().String()
-	if actual != capMsg {
-		t.Errorf("capabilities() = %s; expected %s", actual, capMsg)
-	}
+	require.Equal(t, capMsg, capabilities().String())
+}
+
+func TestSettingEncryptionPassphrase(t *testing.T) {
+	reader := strings.NewReader(configMsg)
+	method := New()
+
+	err := method.processMessages(context.Background(), reader)
+	require.NoError(t, err)
+	require.Equal(t, "AS* XDRF*&U", method.encryptionPassphrase)
 }

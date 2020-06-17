@@ -26,12 +26,10 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
-	"errors"
 	"fmt"
 	"hash"
 	"io"
 	"io/ioutil"
-	"log"
 	"net/url"
 	"os"
 	"path"
@@ -45,6 +43,11 @@ import (
 	"storj.io/uplink"
 
 	"storj.io/apt-transport-tardigrade/message"
+	"storj.io/apt-transport-tardigrade/version"
+)
+
+const (
+	aptTransportUserAgent = "apt-transport-tardigrade/" + version.Version
 )
 
 const (
@@ -78,9 +81,11 @@ const (
 	fieldNamePipeline       = "Pipeline"
 	fieldNameSingleInstance = "Single-Instance"
 	fieldNameURI            = "URI"
+	fieldNameIMSHit         = "IMS-Hit"
 	fieldNameFilename       = "Filename"
 	fieldNameSize           = "Size"
 	fieldNameLastModified   = "Last-Modified"
+	fieldNameVersion        = "Version"
 	fieldNameMessage        = "Message"
 	fieldNameMD5Hash        = "MD5-Hash"
 	fieldNameMD5SumHash     = "MD5Sum-Hash"
@@ -93,39 +98,47 @@ const (
 	fieldValueNotFound = "The specified key does not exist."
 )
 
+const (
+	configItemEncryptionPassphrase = "Acquire::Tardigrade::EncryptionPassphrase"
+	configItemDialTimeout          = "Acquire::Tardigrade::ConnectionTimeout"
+)
+
+const (
+	defaultEncryptionPassphrase = "debian"
+	defaultDialTimeout          = 10 * time.Second
+)
+
 // A Method implements the logic to process incoming apt messages and respond
 // accordingly.
 type Method struct {
-	msgChan       chan []byte
-	stdout        *log.Logger
-	clientMapLock sync.Mutex
-	ctx           context.Context
-	waitGroup     *errgroup.Group
-	storjClients  map[string]*uplink.Project
+	stdin                io.Reader
+	stdout               io.Writer
+	clientMapLock        sync.Mutex
+	clients              map[string]*uplink.Project
+	encryptionPassphrase string
+	dialTimeout          time.Duration
 }
 
 // New returns a new Method configured to read from os.Stdin and write to
 // os.Stdout.
 func New() *Method {
-	m := &Method{
-		msgChan:      make(chan []byte),
-		stdout:       log.New(os.Stdout, "", 0),
-		storjClients: make(map[string]*uplink.Project),
+	return &Method{
+		stdin:                os.Stdin,
+		stdout:               os.Stdout,
+		clients:              make(map[string]*uplink.Project),
+		encryptionPassphrase: defaultEncryptionPassphrase,
+		dialTimeout:          defaultDialTimeout,
 	}
-	return m
 }
 
 // Run flushes the Method's capabilities and then begins reading messages from
-// os.Stdin. Results are written to os.Stdout. The running Method waits for all
+// m.stdin. Results are written to m.stdout. The running Method waits for all
 // Messages to be processed before exiting.
 func (m *Method) Run(ctx context.Context) {
-	m.flushCapabilities()
-	m.processMessages(ctx, os.Stdin)
-}
-
-func (m *Method) flushCapabilities() {
-	msg := capabilities()
-	m.stdout.Println(msg)
+	m.send(capabilities())
+	if err := m.processMessages(ctx, m.stdin); err != nil {
+		m.send(generalFailure(err))
+	}
 }
 
 func capabilities() *message.Message {
@@ -134,13 +147,14 @@ func capabilities() *message.Message {
 		field(fieldNameSendConfig, "true"),
 		field(fieldNamePipeline, "true"),
 		field(fieldNameSingleInstance, "yes"),
+		field(fieldNameVersion, version.Version),
 	}
 	return &message.Message{Header: header, Fields: fields}
 }
 
-// processMessages loops over the channel of Messages
+// processMessages loops over messages given on the input stream
 // and starts a goroutine to process each Message.
-func (m *Method) processMessages(ctx context.Context, input io.Reader) {
+func (m *Method) processMessages(ctx context.Context, input io.Reader) error {
 	scanner := bufio.NewScanner(input)
 	buffer := &bytes.Buffer{}
 	waitGroup, ctx := errgroup.WithContext(ctx)
@@ -155,72 +169,97 @@ func (m *Method) processMessages(ctx context.Context, input io.Reader) {
 			// comes in and the buffer already has some content, it's assuming that
 			// the buffer currently contains a complete message ready to be processed.
 			if len(trimmed) == 0 && buffer.Len() > 3 {
-				gotBytes := buffer.Bytes()
-				waitGroup.Go(func() error {
-					m.handleBytes(ctx, gotBytes)
-					return nil
-				})
+				err := m.handleBytes(ctx, waitGroup, buffer.Bytes())
+				if err != nil {
+					return err
+				}
 				buffer = &bytes.Buffer{}
 			}
 		} else {
 			break
 		}
 	}
-	err := waitGroup.Wait()
-	if err != nil {
-		m.outputGeneralFailure(err)
-	}
+	return waitGroup.Wait()
 }
 
 // handleBytes initializes a new Message and dispatches it according to
 // the Message.Header.Status value.
-func (m *Method) handleBytes(ctx context.Context, b []byte) {
+func (m *Method) handleBytes(ctx context.Context, waitGroup *errgroup.Group, b []byte) error {
 	msg, err := message.FromBytes(b)
 	if err != nil {
-		m.outputGeneralFailure(err)
-		return
+		return err
 	}
 	if msg.Header.Status == headerCodeURIAcquire {
-		// URI Acquire message
-		err := m.uriAcquire(ctx, msg)
-		if err != nil {
-			m.outputGeneralFailure(err)
-			return
-		}
+		// URI Acquire message; APT wants us to get a file
+		waitGroup.Go(func() error {
+			return m.uriAcquire(ctx, msg)
+		})
 	} else if msg.Header.Status == headerCodeConfiguration {
-		m.outputGeneralFailure(errors.New("we don't need no configuration"))
+		// Configuration message; APT is sending its config to us. Process this
+		// synchronously so that following Acquire messages are sure to see the
+		// results of the configure step.
+		err = m.configure(msg)
 	}
+	return err
 }
 
-func (m *Method) getClient(ctx context.Context, grant string) (_ *uplink.Project, err error) {
+func (m *Method) configure(msg *message.Message) error {
+	items := msg.GetFieldList(fieldNameConfigItem)
+	for _, f := range items {
+		config := strings.Split(f.Value, "=")
+		if len(config) != 2 {
+			return errs.New("Invalid configuration item %q", f.Value)
+		}
+		value, err := url.PathUnescape(config[1])
+		if err != nil {
+			return errs.New("Bad encoding on configuration item %q: %v", f.Value, err)
+		}
+		switch config[0] {
+		case configItemDialTimeout:
+			timeout, err := time.ParseDuration(value)
+			if err != nil {
+				return errs.New("Invalid value for %s: %s", config[0], err)
+			}
+			m.dialTimeout = timeout
+		case configItemEncryptionPassphrase:
+			m.encryptionPassphrase = value
+		}
+	}
+	return nil
+}
+
+func (m *Method) getClient(ctx context.Context, satelliteAddr, apiKey string) (_ *uplink.Project, err error) {
 	m.clientMapLock.Lock()
 	defer m.clientMapLock.Unlock()
 
-	client, ok := m.storjClients[grant]
+	client, ok := m.clients[apiKey]
 	if !ok {
-		client, err = m.storjClient(ctx, grant)
+		client, err = m.tardigradeClient(ctx, satelliteAddr, apiKey)
 		if err != nil {
 			return nil, err
 		}
-		m.storjClients[grant] = client
+		m.clients[apiKey] = client
 	}
 	return client, nil
 }
 
-func uriParse(uri string) (accessGrant, bucket, objectKey string, err error) {
+func (m *Method) tardigradeDebURIParse(uri string) (satelliteAddress, apiKey, bucket, objectKey string, err error) {
 	uriObject, err := url.Parse(uri)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	cleanPath := path.Clean(uriObject.Path)
 	pathParts := strings.Split(strings.TrimLeft(cleanPath, "/"), "/")
 	if len(pathParts) < 2 {
-		return "", "", "", fmt.Errorf("invalid Tardigrade source URI %q, %v", uri, pathParts)
+		return "", "", "", "", fmt.Errorf("invalid Tardigrade source URI %q, %v", uri, pathParts)
 	}
 	bucket = pathParts[1]
 	objectKey = strings.Join(pathParts[2:], "/")
-	host := uriObject.Host + pathParts[0]
-	return host, bucket, objectKey, nil
+	satelliteAddress = uriObject.Host
+	if uriObject.User != nil {
+		satelliteAddress = uriObject.User.Username() + "@" + satelliteAddress
+	}
+	return satelliteAddress, pathParts[0], bucket, objectKey, nil
 }
 
 // uriAcquire downloads and stores objects from S3 based on the contents
@@ -228,32 +267,54 @@ func uriParse(uri string) (accessGrant, bucket, objectKey string, err error) {
 func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) error {
 	uri, hasField := msg.GetFieldValue(fieldNameURI)
 	if !hasField {
-		return errors.New("acquire message missing required field: URI")
+		return errs.New("acquire message missing required field: URI")
 	}
-	grant, bucket, path, err := uriParse(uri)
+	satelliteAddr, apiKey, bucket, pathKey, err := m.tardigradeDebURIParse(uri)
 	if err != nil {
 		return err
 	}
-	client, err := m.getClient(ctx, grant)
+	m.send(aptLogMessage("satelliteAddr=%q, apiKey=%q, bucket=%q, pathKey=%q", satelliteAddr, apiKey, bucket, pathKey))
+	client, err := m.getClient(ctx, satelliteAddr, apiKey)
 	if err != nil {
-		return err
-	}
-
-	download, err := client.DownloadObject(ctx, bucket, path, nil)
-	if err != nil {
-		return err
-	}
-	downloadInfo := download.Info()
-	expectedLen := downloadInfo.System.ContentLength
-	lastModified := downloadInfo.System.Created
-	if err := m.outputURIStart(uri, expectedLen, lastModified); err != nil {
 		return err
 	}
 
 	filename, hasField := msg.GetFieldValue(fieldNameFilename)
 	if !hasField {
-		return errors.New("acquire message missing required field: Filename")
+		return errs.New("acquire message missing required field: Filename")
 	}
+	var lastModifiedInAPT time.Time
+	lastModifiedStr, hasField := msg.GetFieldValue(fieldNameLastModified)
+	if hasField {
+		lastModifiedInAPT, err = time.Parse(time.RFC1123, lastModifiedStr)
+		if err != nil {
+			// ignore
+			lastModifiedInAPT = time.Time{}
+		}
+	}
+
+	download, err := client.DownloadObject(ctx, bucket, pathKey, nil)
+	if err != nil {
+		m.send(aptLogMessage("error from remote was: %v", err))
+		m.send(notFound(uri))
+		return nil
+	}
+	downloadInfo := download.Info()
+	expectedLen := downloadInfo.System.ContentLength
+	lastModifiedInTardigrade := downloadInfo.System.Created
+
+	if !lastModifiedInTardigrade.IsZero() && !lastModifiedInAPT.IsZero() {
+		if lastModifiedInTardigrade.Before(lastModifiedInAPT) {
+			doneMsg, err := uriDone(uri, expectedLen, lastModifiedInAPT, filename, true)
+			if err != nil {
+				return err
+			}
+			m.send(doneMsg)
+			return nil
+		}
+	}
+	m.send(uriStart(uri, expectedLen, lastModifiedInTardigrade))
+
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -266,26 +327,44 @@ func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) error {
 	if err != nil {
 		return err
 	}
-	if err := m.outputURIDone(uri, numBytes, lastModified, filename); err != nil {
+	doneMsg, err := uriDone(uri, numBytes, lastModifiedInTardigrade, filename, false)
+	if err != nil {
 		return err
 	}
+	m.send(doneMsg)
 	return nil
 }
 
-// storjClient provides an initialized client blah blah
-func (m *Method) storjClient(ctx context.Context, grant string) (*uplink.Project, error) {
-	access, err := uplink.ParseAccess(grant)
+// tardigradeClient returns a configured and opened Project handle, which can be used
+// to download specific paths within the project (if the api key allows it).
+func (m *Method) tardigradeClient(ctx context.Context, satelliteAddr, apiKey string) (*uplink.Project, error) {
+	uplinkConfig := uplink.Config{
+		UserAgent:   aptTransportUserAgent,
+		DialTimeout: m.dialTimeout,
+	}
+	access, err := uplinkConfig.RequestAccessWithPassphrase(ctx, satelliteAddr, apiKey, m.encryptionPassphrase)
 	if err != nil {
 		return nil, err
 	}
 	return uplink.OpenProject(ctx, access)
 }
 
+// aptLogMessage constructs a Message that when printed looks like the
+// following example:
+//
+// 101 Log
+// Message: Now reticulating splines
+func aptLogMessage(messageFormat string, args ...interface{}) *message.Message {
+	h := header(headerCodeGeneralLog, headerDescriptionGeneralLog)
+	messageField := field(fieldNameMessage, fmt.Sprintf(messageFormat, args...))
+	return &message.Message{Header: h, Fields: []*message.Field{messageField}}
+}
+
 // requestStatus constructs a Message that when printed looks like the
 // following example:
 //
 // 102 Status
-// URI: tardigrade://fake-serialized-access/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
+// URI: tardigrade://us-central-1.tardigrade.io:7777/apiKeyString/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
 // Message: Connecting to $satellite
 func requestStatus(objectURI, status string) *message.Message {
 	h := header(headerCodeStatus, headerDescriptionStatus)
@@ -298,25 +377,22 @@ func requestStatus(objectURI, status string) *message.Message {
 // example:
 //
 // 200 URI Start
-// URI: tardigrade://fake-serialized-access/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
+// URI: tardigrade://us-central-1.tardigrade.io:7777/apiKeyString/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
 // Size: 9012
 // Last-Modified: Thu, 25 Oct 2018 20:17:39 GMT
-func (m *Method) uriStart(objectURI string, size int64, t time.Time) (*message.Message, error) {
+func uriStart(objectURI string, size int64, t time.Time) *message.Message {
 	h := header(headerCodeURIStart, headerDescriptionURIStart)
 	uriField := field(fieldNameURI, objectURI)
 	sizeField := field(fieldNameSize, strconv.FormatInt(size, 10))
-	lmField, err := m.lastModified(t)
-	if err != nil {
-		return nil, err
-	}
-	return &message.Message{Header: h, Fields: []*message.Field{uriField, sizeField, lmField}}, nil
+	lmField := lastModifiedField(t)
+	return &message.Message{Header: h, Fields: []*message.Field{uriField, sizeField, lmField}}
 }
 
 // uriDone constructs a Message that when printed looks like the following
 // example:
 //
 // 201 URI Done
-// URI: tardigrade://fake-serialized-access/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
+// URI: tardigrade://us-central-1.tardigrade.io:7777/apiKeyString/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
 // Filename: /var/cache/apt/archives/partial/riemann-sumd_0.7.2-1_all.deb
 // Size: 9012
 // Last-Modified: Thu, 25 Oct 2018 20:17:39 GMT
@@ -325,50 +401,36 @@ func (m *Method) uriStart(objectURI string, size int64, t time.Time) (*message.M
 // SHA1-Hash: 0d02ab49503be20d153cea63a472c43ebfad2efc
 // SHA256-Hash: 92a3f70eb1cf2c69880988a8e74dc6fea7e4f15ee261f74b9be55c866f69c64b
 // SHA512-Hash: ab3b1c94618cb58e2147db1c1d4bd3472f17fb11b1361e77216b461ab7d5f5952a5c6bb0443a1507d8ca5ef1eb18ac7552d0f2a537a0d44b8612d7218bf379fb
-func (m *Method) uriDone(objectURI string, size int64, t time.Time, filename string) (*message.Message, error) {
+func uriDone(objectURI string, size int64, t time.Time, filename string, imsHit bool) (*message.Message, error) {
 	h := header(headerCodeURIDone, headerDescriptionURIDone)
 	uriField := field(fieldNameURI, objectURI)
 	filenameField := field(fieldNameFilename, filename)
 	sizeField := field(fieldNameSize, strconv.FormatInt(size, 10))
-	lmField, err := m.lastModified(t)
-	if err != nil {
-		return nil, err
-	}
-	fileBytes, err := ioutil.ReadFile(filename)
-	if err != nil {
-		return nil, err
-	}
-
-	md5Field, err := m.md5Field(fileBytes)
-	if err != nil {
-		return nil, err
-	}
-	md5SumField, err := m.md5SumField(fileBytes)
-	if err != nil {
-		return nil, err
-	}
-	sha1Field, err := m.sha1Field(fileBytes)
-	if err != nil {
-		return nil, err
-	}
-	sha256Field, err := m.sha256Field(fileBytes)
-	if err != nil {
-		return nil, err
-	}
-	sha512Field, err := m.sha512Field(fileBytes)
-	if err != nil {
-		return nil, err
-	}
+	lmField := lastModifiedField(t)
 	fields := []*message.Field{
 		uriField,
 		filenameField,
 		sizeField,
 		lmField,
-		md5Field,
-		md5SumField,
-		sha1Field,
-		sha256Field,
-		sha512Field,
+	}
+	if imsHit {
+		fields = append(fields, field(fieldNameIMSHit, "true"))
+	} else {
+		fileBytes, err := ioutil.ReadFile(filename)
+		if err != nil {
+			return nil, err
+		}
+
+		fieldMethods := []func([]byte) *message.Field{
+			md5Field,
+			md5SumField,
+			sha1Field,
+			sha256Field,
+			sha512Field,
+		}
+		for _, fieldMethod := range fieldMethods {
+			fields = append(fields, fieldMethod(fileBytes))
+		}
 	}
 	return &message.Message{Header: h, Fields: fields}, nil
 }
@@ -378,7 +440,7 @@ func (m *Method) uriDone(objectURI string, size int64, t time.Time, filename str
 //
 // 400 URI Failure
 // Message: The specified key does not exist.
-// URI: tardigrade://fake-serialized-access/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
+// URI: tardigrade://us-central-1.tardigrade.io:7777/apiKeyString/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
 func notFound(objectURI string) *message.Message {
 	h := header(headerCodeURIFailure, headerDescriptionURIFailure)
 	uriField := field(fieldNameURI, objectURI)
@@ -398,41 +460,13 @@ func generalFailure(err error) *message.Message {
 	return &message.Message{Header: h, Fields: []*message.Field{messageField}}
 }
 
-func (m *Method) outputRequestStatus(objectURI, status string) error {
-	msg := requestStatus(objectURI, status)
-	m.stdout.Println(msg.String())
-	return nil
-}
-
-func (m *Method) outputURIStart(objectURI string, size int64, lastModified time.Time) error {
-	msg, err := m.uriStart(objectURI, size, lastModified)
+// send formats a message and sends it back to APT, via the stdout stream.
+func (m *Method) send(msg *message.Message) {
+	_, err := m.stdout.Write([]byte(msg.String() + "\n"))
 	if err != nil {
-		return err
+		// if we can't write that message, we probably can't write a general failure either.
+		panic(err)
 	}
-	m.stdout.Println(msg.String())
-	return nil
-}
-
-// outputURIDone prints a message including the details of the finished URI.
-func (m *Method) outputURIDone(objectURI string, size int64, lastModified time.Time, filename string) error {
-	msg, err := m.uriDone(objectURI, size, lastModified, filename)
-	if err != nil {
-		return err
-	}
-	m.stdout.Println(msg.String())
-	return nil
-}
-
-// outputNotFound prints a message including the details of the URI that could
-// not be found.
-func (m *Method) outputNotFound(objectURI string) {
-	msg := notFound(objectURI)
-	m.stdout.Println(msg.String())
-}
-
-func (m *Method) outputGeneralFailure(err error) {
-	msg := generalFailure(err)
-	m.stdout.Println(msg.String())
 }
 
 func header(code int, description string) *message.Header {
@@ -443,69 +477,43 @@ func field(name string, value string) *message.Field {
 	return &message.Field{Name: name, Value: value}
 }
 
-// lastModified returns a Field with the given Time formatted using the RFC1123
-// specification in GMT, as specified in the APT method interface documentation.
-func (m *Method) lastModified(t time.Time) (*message.Field, error) {
-	gmt, err := time.LoadLocation("GMT")
-	if err != nil {
-		return nil, err
-	}
-	return field(fieldNameLastModified, t.In(gmt).Format(time.RFC1123)), nil
+// lastModifiedField returns a Field with the given Time formatted using the
+// RFC1123 specification in GMT, as specified in the APT method interface
+// documentation.
+func lastModifiedField(t time.Time) *message.Field {
+	return field(fieldNameLastModified, t.UTC().Format(time.RFC1123))
 }
 
-func (m *Method) md5Field(bytes []byte) (*message.Field, error) {
-	md5Hash := md5.New()
-	md5String, err := m.computeHash(md5Hash, bytes)
-	if err != nil {
-		return nil, err
-	}
-	return field(fieldNameMD5Hash, md5String), nil
+func md5Field(bytes []byte) *message.Field {
+	return field(fieldNameMD5Hash, computeHash(md5.New(), bytes))
 }
 
-func (m *Method) md5SumField(bytes []byte) (*message.Field, error) {
-	md5Hash := md5.New()
-	md5String, err := m.computeHash(md5Hash, bytes)
-	if err != nil {
-		return nil, err
-	}
-	return field(fieldNameMD5SumHash, md5String), nil
+func md5SumField(bytes []byte) *message.Field {
+	return field(fieldNameMD5SumHash, computeHash(md5.New(), bytes))
 }
 
-func (m *Method) sha1Field(bytes []byte) (*message.Field, error) {
-	sha1Hash := sha1.New()
-	sha1String, err := m.computeHash(sha1Hash, bytes)
-	if err != nil {
-		return nil, err
-	}
-	return field(fieldNameSHA1Hash, sha1String), nil
+func sha1Field(bytes []byte) *message.Field {
+	return field(fieldNameSHA1Hash, computeHash(sha1.New(), bytes))
 }
 
-func (m *Method) sha256Field(bytes []byte) (*message.Field, error) {
-	sha256Hash := sha256.New()
-	sha256String, err := m.computeHash(sha256Hash, bytes)
-	if err != nil {
-		return nil, err
-	}
-	return field(fieldNameSHA256Hash, sha256String), nil
+func sha256Field(bytes []byte) *message.Field {
+	return field(fieldNameSHA256Hash, computeHash(sha256.New(), bytes))
 }
 
-func (m *Method) sha512Field(bytes []byte) (*message.Field, error) {
-	sha512Hash := sha512.New()
-	sha512String, err := m.computeHash(sha512Hash, bytes)
-	if err != nil {
-		return nil, err
-	}
-	return field(fieldNameSHA512Hash, sha512String), nil
+func sha512Field(bytes []byte) *message.Field {
+	return field(fieldNameSHA512Hash, computeHash(sha512.New(), bytes))
 }
 
-func (m *Method) computeHash(h hash.Hash, fileBytes []byte) (string, error) {
-	if err := m.prepareHash(h, fileBytes); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
-}
-
-func (m *Method) prepareHash(h hash.Hash, fileBytes []byte) error {
+func computeHash(h hash.Hash, fileBytes []byte) string {
 	_, err := io.Copy(h, bytes.NewReader(fileBytes))
-	return err
+	if err != nil {
+		// This should never happen. It appears that io.Copy will return
+		// an error only when it gets an error (besides io.EOF) while
+		// reading or while writing. bytes.Reader appears never to return
+		// an error (besides io.EOF) if given valid arguments, and io.Copy
+		// can probably be relied upon to give valid arguments. Likewise,
+		// writing to a hash.Hash object never returns an error.
+		panic("Could not copy from bytes.Reader to hash.Hash: " + err.Error())
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
 }

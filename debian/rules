@@ -1,0 +1,10 @@
+#!/usr/bin/make -f
+
+override_dh_auto_build:
+	go build -o tardigrade
+
+override_dh_auto_clean:
+	$(RM) tardigrade
+
+%:
+	dh $@

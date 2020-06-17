@@ -1,0 +1,17 @@
+Source: apt-transport-tardigrade
+Section: admin
+Priority: optional
+Maintainer: paul cannon <thepaul@storj.io>
+Build-Depends: debhelper-compat (= 12), golang-go (>= 1.13)
+Standards-Version: 4.5.0
+Homepage: https://github.com/storj/apt-transport-tardigrade
+
+Package: apt-transport-tardigrade
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: APT transport using the Tardigrade network
+ The apt-transport-tardigrade project provides support for downloading APT
+ package lists and packages via the Tardigrade network. Tardigrade provides
+ inexpensive, reliable, secure, and relatively fast online storage via a
+ distributed network of individual providers. It is powered by the Storj
+ project.

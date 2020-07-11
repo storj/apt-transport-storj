@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Binary apt-transport-tardigrade implements the APT method interface in order
+// Binary apt-transport-storj implements the APT method interface in order
 // to allow hosting of APT packages in Tardigrade.io storage. For more
 // information about the APT method interface, see
 // http://www.fifi.org/doc/libapt-pkg-doc/method.html/ch2.html#s2.3.
@@ -27,8 +27,8 @@ import (
 	"os"
 	"runtime"
 
-	"storj.io/apt-transport-tardigrade/method"
-	"storj.io/apt-transport-tardigrade/version"
+	"storj.io/apt-transport-storj/method"
+	"storj.io/apt-transport-storj/version"
 )
 
 var (
@@ -39,7 +39,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("apt-transport-tardigrade %s (Go version: %s)\n", version.Version, runtime.Version())
+		fmt.Printf("apt-transport-storj %s (Go version: %s)\n", version.Version, runtime.Version())
 		os.Exit(0)
 	}
 

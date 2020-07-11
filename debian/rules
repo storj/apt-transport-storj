@@ -1,10 +1,10 @@
 #!/usr/bin/make -f
 
 override_dh_auto_build:
-	go build -o tardigrade
+	go build -o storj-apt
 
 override_dh_auto_clean:
-	$(RM) tardigrade
+	$(RM) storj-apt
 
 %:
 	dh $@

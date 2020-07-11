@@ -1,7 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: apt-transport-tardigrade
+Upstream-Name: apt-transport-storj
 Upstream-Contact: Storj Labs, Inc.
-Source: https://github.com/storj/apt-transport-tardigrade
+Source: https://github.com/storj/apt-transport-storj
 
 Files: *
 Copyright: 2018 Google LLC

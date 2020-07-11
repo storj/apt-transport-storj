@@ -47,11 +47,11 @@ Config-Item: APT::Compressor::lzma::UncompressArg::=--format%3dlzma
 	lzmaUncompressArgDecoded = `--format=lzma`
 
 	acqMsg = `600 URI Acquire
-URI: tardigrade://satellite.tardigrade.io:1234/fakeapikey/my-fake-bucket/apt/generic/python-bernhard_0.2.3-1_all.deb
+URI: storj-apt://satellite.tardigrade.io:1234/fakeapikey/my-fake-bucket/apt/generic/python-bernhard_0.2.3-1_all.deb
 Filename: /var/cache/apt/archives/partial/python-bernhard_0.2.3-1_all.deb
 `
 	acqMsgNoSpaces = `600 URI Acquire
-URI:tardigrade://satellite.tardigrade.io:1234/fakeapikey/project-a/dists/trusty/main/binary-amd64/Packages
+URI:storj-apt://satellite.tardigrade.io:1234/fakeapikey/project-a/dists/trusty/main/binary-amd64/Packages
 Filename:Packages.downloaded
 Fail-Ignore:true
 Index-File:true
@@ -147,5 +147,5 @@ func TestParseFieldsWithMissingSpaces(t *testing.T) {
 
 	field := m.Fields[0]
 	require.Equal(t, "URI", field.Name)
-	require.Equal(t, "tardigrade://satellite.tardigrade.io:1234/fakeapikey/project-a/dists/trusty/main/binary-amd64/Packages", field.Value)
+	require.Equal(t, "storj-apt://satellite.tardigrade.io:1234/fakeapikey/project-a/dists/trusty/main/binary-amd64/Packages", field.Value)
 }

@@ -42,12 +42,12 @@ import (
 	"golang.org/x/sync/errgroup"
 	"storj.io/uplink"
 
-	"storj.io/apt-transport-tardigrade/message"
-	"storj.io/apt-transport-tardigrade/version"
+	"storj.io/apt-transport-storj/message"
+	"storj.io/apt-transport-storj/version"
 )
 
 const (
-	aptTransportUserAgent = "apt-transport-tardigrade/" + version.Version
+	aptTransportUserAgent = "apt-transport-storj/" + version.Version
 )
 
 const (
@@ -99,8 +99,8 @@ const (
 )
 
 const (
-	configItemEncryptionPassphrase = "Acquire::Tardigrade::EncryptionPassphrase"
-	configItemDialTimeout          = "Acquire::Tardigrade::ConnectionTimeout"
+	configItemEncryptionPassphrase = "Acquire::Storj::EncryptionPassphrase"
+	configItemDialTimeout          = "Acquire::Storj::ConnectionTimeout"
 )
 
 const (
@@ -234,7 +234,7 @@ func (m *Method) getClient(ctx context.Context, satelliteAddr, apiKey string) (_
 
 	client, ok := m.clients[apiKey]
 	if !ok {
-		client, err = m.tardigradeClient(ctx, satelliteAddr, apiKey)
+		client, err = m.storjClient(ctx, satelliteAddr, apiKey)
 		if err != nil {
 			return nil, err
 		}
@@ -243,7 +243,7 @@ func (m *Method) getClient(ctx context.Context, satelliteAddr, apiKey string) (_
 	return client, nil
 }
 
-func (m *Method) tardigradeDebURIParse(uri string) (satelliteAddress, apiKey, bucket, objectKey string, err error) {
+func (m *Method) storjDebURIParse(uri string) (satelliteAddress, apiKey, bucket, objectKey string, err error) {
 	uriObject, err := url.Parse(uri)
 	if err != nil {
 		return "", "", "", "", err
@@ -251,7 +251,7 @@ func (m *Method) tardigradeDebURIParse(uri string) (satelliteAddress, apiKey, bu
 	cleanPath := path.Clean(uriObject.Path)
 	pathParts := strings.Split(strings.TrimLeft(cleanPath, "/"), "/")
 	if len(pathParts) < 2 {
-		return "", "", "", "", fmt.Errorf("invalid Tardigrade source URI %q, %v", uri, pathParts)
+		return "", "", "", "", fmt.Errorf("invalid storj-apt source URI %q, %v", uri, pathParts)
 	}
 	bucket = pathParts[1]
 	objectKey = strings.Join(pathParts[2:], "/")
@@ -269,7 +269,7 @@ func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) error {
 	if !hasField {
 		return errs.New("acquire message missing required field: URI")
 	}
-	satelliteAddr, apiKey, bucket, pathKey, err := m.tardigradeDebURIParse(uri)
+	satelliteAddr, apiKey, bucket, pathKey, err := m.storjDebURIParse(uri)
 	if err != nil {
 		return err
 	}
@@ -301,10 +301,10 @@ func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) error {
 	}
 	downloadInfo := download.Info()
 	expectedLen := downloadInfo.System.ContentLength
-	lastModifiedInTardigrade := downloadInfo.System.Created
+	lastModifiedInStorj := downloadInfo.System.Created
 
-	if !lastModifiedInTardigrade.IsZero() && !lastModifiedInAPT.IsZero() {
-		if lastModifiedInTardigrade.Before(lastModifiedInAPT) {
+	if !lastModifiedInStorj.IsZero() && !lastModifiedInAPT.IsZero() {
+		if lastModifiedInStorj.Before(lastModifiedInAPT) {
 			doneMsg, err := uriDone(uri, expectedLen, lastModifiedInAPT, filename, true)
 			if err != nil {
 				return err
@@ -313,7 +313,7 @@ func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) error {
 			return nil
 		}
 	}
-	m.send(uriStart(uri, expectedLen, lastModifiedInTardigrade))
+	m.send(uriStart(uri, expectedLen, lastModifiedInStorj))
 
 	file, err := os.Create(filename)
 	if err != nil {
@@ -327,7 +327,7 @@ func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) error {
 	if err != nil {
 		return err
 	}
-	doneMsg, err := uriDone(uri, numBytes, lastModifiedInTardigrade, filename, false)
+	doneMsg, err := uriDone(uri, numBytes, lastModifiedInStorj, filename, false)
 	if err != nil {
 		return err
 	}
@@ -335,9 +335,9 @@ func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) error {
 	return nil
 }
 
-// tardigradeClient returns a configured and opened Project handle, which can be used
+// storjClient returns a configured and opened Project handle, which can be used
 // to download specific paths within the project (if the api key allows it).
-func (m *Method) tardigradeClient(ctx context.Context, satelliteAddr, apiKey string) (*uplink.Project, error) {
+func (m *Method) storjClient(ctx context.Context, satelliteAddr, apiKey string) (*uplink.Project, error) {
 	uplinkConfig := uplink.Config{
 		UserAgent:   aptTransportUserAgent,
 		DialTimeout: m.dialTimeout,
@@ -364,7 +364,7 @@ func aptLogMessage(messageFormat string, args ...interface{}) *message.Message {
 // following example:
 //
 // 102 Status
-// URI: tardigrade://us-central-1.tardigrade.io:7777/apiKeyString/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
+// URI: storj-apt://us-central-1.tardigrade.io:7777/apiKeyString/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
 // Message: Connecting to $satellite
 func requestStatus(objectURI, status string) *message.Message {
 	h := header(headerCodeStatus, headerDescriptionStatus)
@@ -377,7 +377,7 @@ func requestStatus(objectURI, status string) *message.Message {
 // example:
 //
 // 200 URI Start
-// URI: tardigrade://us-central-1.tardigrade.io:7777/apiKeyString/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
+// URI: storj-apt://us-central-1.tardigrade.io:7777/apiKeyString/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
 // Size: 9012
 // Last-Modified: Thu, 25 Oct 2018 20:17:39 GMT
 func uriStart(objectURI string, size int64, t time.Time) *message.Message {
@@ -392,7 +392,7 @@ func uriStart(objectURI string, size int64, t time.Time) *message.Message {
 // example:
 //
 // 201 URI Done
-// URI: tardigrade://us-central-1.tardigrade.io:7777/apiKeyString/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
+// URI: storj-apt://us-central-1.tardigrade.io:7777/apiKeyString/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
 // Filename: /var/cache/apt/archives/partial/riemann-sumd_0.7.2-1_all.deb
 // Size: 9012
 // Last-Modified: Thu, 25 Oct 2018 20:17:39 GMT
@@ -440,7 +440,7 @@ func uriDone(objectURI string, size int64, t time.Time, filename string, imsHit 
 //
 // 400 URI Failure
 // Message: The specified key does not exist.
-// URI: tardigrade://us-central-1.tardigrade.io:7777/apiKeyString/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
+// URI: storj-apt://us-central-1.tardigrade.io:7777/apiKeyString/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
 func notFound(objectURI string) *message.Message {
 	h := header(headerCodeURIFailure, headerDescriptionURIFailure)
 	uriField := field(fieldNameURI, objectURI)

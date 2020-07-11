@@ -1,4 +1,4 @@
-module storj.io/apt-transport-tardigrade
+module storj.io/apt-transport-storj
 
 require (
 	github.com/pkg/errors v0.9.1 // indirect

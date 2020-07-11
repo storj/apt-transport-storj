@@ -39,7 +39,7 @@ Config-Item: Dir::Ignore-Files-Silently::=~$
 Config-Item: Acquire::cdrom::mount=/media/cdrom
 Config-Item: Aptitude::Get-Root-Command=sudo:/usr/bin/sudo
 Config-Item: Unattended-Upgrade::Allowed-Origins::=${distro_id}:${distro_codename}-security
-Config-Item: Acquire::Tardigrade::EncryptionPassphrase=AS%2A%20XDRF%2A%26U
+Config-Item: Acquire::Storj::EncryptionPassphrase=AS%2A%20XDRF%2A%26U
 
 `
 )

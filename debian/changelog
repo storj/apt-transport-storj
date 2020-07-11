@@ -1,4 +1,10 @@
-apt-transport-tardigrade (0.0.1) unstable; urgency=low
+apt-transport-storj (0.0.2) UNRELEASED; urgency=low
+
+  * Change name to clarify scope of project
+
+ -- paul cannon <pik@debian.org>  Sat, 11 Jul 2020 12:54:29 -0500
+
+apt-transport-tardigrade (0.0.1) UNRELEASED; urgency=low
 
   * Initial Release.
 

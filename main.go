@@ -27,8 +27,8 @@ import (
 	"os"
 	"runtime"
 
+	"storj.io/apt-transport-storj/common"
 	"storj.io/apt-transport-storj/method"
-	"storj.io/apt-transport-storj/version"
 )
 
 var (
@@ -39,7 +39,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("apt-transport-storj %s (Go version: %s)\n", version.Version, runtime.Version())
+		fmt.Printf("apt-transport-storj %s (Go version: %s)\n", common.Version, runtime.Version())
 		os.Exit(0)
 	}
 

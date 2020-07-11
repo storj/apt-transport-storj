@@ -42,12 +42,13 @@ import (
 	"golang.org/x/sync/errgroup"
 	"storj.io/uplink"
 
+	"storj.io/apt-transport-storj/common"
 	"storj.io/apt-transport-storj/message"
-	"storj.io/apt-transport-storj/version"
+	"storj.io/apt-transport-storj/symlinks"
 )
 
 const (
-	aptTransportUserAgent = "apt-transport-storj/" + version.Version
+	aptTransportUserAgent = "apt-transport-storj/" + common.Version
 )
 
 const (
@@ -108,13 +109,27 @@ const (
 	defaultDialTimeout          = 10 * time.Second
 )
 
+type storjClient struct {
+	project    *uplink.Project
+	symlinkMap symlinks.SymlinkMap
+
+	Err    error
+	locker sync.Mutex
+	ready  *sync.Cond
+}
+
+type apiKeyAndBucket struct {
+	apiKey string
+	bucket string
+}
+
 // A Method implements the logic to process incoming apt messages and respond
 // accordingly.
 type Method struct {
 	stdin                io.Reader
 	stdout               io.Writer
 	clientMapLock        sync.Mutex
-	clients              map[string]*uplink.Project
+	clients              map[apiKeyAndBucket]*storjClient
 	encryptionPassphrase string
 	dialTimeout          time.Duration
 }
@@ -125,7 +140,7 @@ func New() *Method {
 	return &Method{
 		stdin:                os.Stdin,
 		stdout:               os.Stdout,
-		clients:              make(map[string]*uplink.Project),
+		clients:              make(map[apiKeyAndBucket]*storjClient),
 		encryptionPassphrase: defaultEncryptionPassphrase,
 		dialTimeout:          defaultDialTimeout,
 	}
@@ -147,7 +162,7 @@ func capabilities() *message.Message {
 		field(fieldNameSendConfig, "true"),
 		field(fieldNamePipeline, "true"),
 		field(fieldNameSingleInstance, "yes"),
-		field(fieldNameVersion, version.Version),
+		field(fieldNameVersion, common.Version),
 	}
 	return &message.Message{Header: header, Fields: fields}
 }
@@ -228,17 +243,17 @@ func (m *Method) configure(msg *message.Message) error {
 	return nil
 }
 
-func (m *Method) getClient(ctx context.Context, satelliteAddr, apiKey string) (_ *uplink.Project, err error) {
+func (m *Method) getClient(ctx context.Context, satelliteAddr, apiKey, bucket string) (_ *storjClient, err error) {
 	m.clientMapLock.Lock()
 	defer m.clientMapLock.Unlock()
 
-	client, ok := m.clients[apiKey]
+	client, ok := m.clients[apiKeyAndBucket{apiKey, bucket}]
 	if !ok {
-		client, err = m.storjClient(ctx, satelliteAddr, apiKey)
+		client, err = m.storjClient(ctx, satelliteAddr, apiKey, bucket)
 		if err != nil {
 			return nil, err
 		}
-		m.clients[apiKey] = client
+		m.clients[apiKeyAndBucket{apiKey, bucket}] = client
 	}
 	return client, nil
 }
@@ -274,7 +289,7 @@ func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) error {
 		return err
 	}
 	m.send(aptLogMessage("satelliteAddr=%q, apiKey=%q, bucket=%q, pathKey=%q", satelliteAddr, apiKey, bucket, pathKey))
-	client, err := m.getClient(ctx, satelliteAddr, apiKey)
+	client, err := m.getClient(ctx, satelliteAddr, apiKey, bucket)
 	if err != nil {
 		return err
 	}
@@ -337,7 +352,7 @@ func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) error {
 
 // storjClient returns a configured and opened Project handle, which can be used
 // to download specific paths within the project (if the api key allows it).
-func (m *Method) storjClient(ctx context.Context, satelliteAddr, apiKey string) (*uplink.Project, error) {
+func (m *Method) storjClient(ctx context.Context, satelliteAddr, apiKey, bucket string) (*storjClient, error) {
 	uplinkConfig := uplink.Config{
 		UserAgent:   aptTransportUserAgent,
 		DialTimeout: m.dialTimeout,
@@ -346,7 +361,53 @@ func (m *Method) storjClient(ctx context.Context, satelliteAddr, apiKey string) 
 	if err != nil {
 		return nil, err
 	}
-	return uplink.OpenProject(ctx, access)
+	client := &storjClient{}
+	client.ready = sync.NewCond(&client.locker)
+	go client.doSetup(ctx, access, bucket)
+	return client, nil
+}
+
+func (c *storjClient) doSetup(ctx context.Context, access *uplink.Access, bucket string) {
+	defer c.ready.Broadcast()
+
+	project, err := uplink.OpenProject(ctx, access)
+	if err != nil {
+		c.Err = err
+		return
+	}
+	c.project = project
+	symlinkMap, err := symlinks.DownloadSymlinkMap(ctx, project, bucket)
+	if err != nil {
+		c.Err = fmt.Errorf("failed to get symlink map: %v", err)
+		return
+	}
+	c.symlinkMap = symlinkMap
+}
+
+func (c *storjClient) getProject() (*uplink.Project, error) {
+	if c.Err == nil && c.symlinkMap == nil {
+		c.locker.Lock()
+		for c.Err == nil && c.symlinkMap == nil {
+			c.ready.Wait()
+		}
+		c.locker.Unlock()
+	}
+	if c.Err != nil {
+		return nil, c.Err
+	}
+	return c.project, nil
+}
+
+func (c *storjClient) DownloadObject(ctx context.Context, bucket, pathKey string, options *uplink.DownloadOptions) (*uplink.Download, error) {
+	project, err := c.getProject()
+	if err != nil {
+		return nil, err
+	}
+	resolvedPath, err := c.symlinkMap.Resolve(pathKey)
+	if err != nil {
+		return nil, err
+	}
+	return project.DownloadObject(ctx, bucket, resolvedPath, options)
 }
 
 // aptLogMessage constructs a Message that when printed looks like the

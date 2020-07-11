@@ -1,6 +1,7 @@
 apt-transport-storj (0.0.2) UNRELEASED; urgency=low
 
   * Change name to clarify scope of project
+  * Add handling for symlinks on mirror
 
  -- paul cannon <pik@debian.org>  Sat, 11 Jul 2020 12:54:29 -0500
 

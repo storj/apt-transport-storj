@@ -28,6 +28,7 @@ const (
 Send-Config: true
 Pipeline: true
 Single-Instance: yes
+Version: 0.0.1
 `
 
 	// The trailing blank line is intentional

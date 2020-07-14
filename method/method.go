@@ -390,26 +390,32 @@ func (m *Method) storjClient(ctx context.Context, satelliteAddr, apiKey, bucket 
 	}
 	client := &storjClient{}
 	client.ready = sync.NewCond(&client.locker)
-	go client.doSetup(ctx, access, bucket, statusFunc)
+
+	go func() {
+		defer client.ready.Broadcast()
+		project, symlinkMap, err := doSetup(ctx, access, bucket, statusFunc)
+		if err != nil {
+			client.Err = err
+		} else {
+			client.project = project
+			client.symlinkMap = symlinkMap
+		}
+	}()
+
 	return client, nil
 }
 
-func (c *storjClient) doSetup(ctx context.Context, access *uplink.Access, bucket string, statusFunc func(string)) {
-	defer c.ready.Broadcast()
-
+func doSetup(ctx context.Context, access *uplink.Access, bucket string, statusFunc func(string)) (*uplink.Project, symlinks.SymlinkMap, error) {
 	project, err := uplink.OpenProject(ctx, access)
 	if err != nil {
-		c.Err = err
-		return
+		return nil, nil, err
 	}
-	c.project = project
 	statusFunc("Fetching symlink map")
 	symlinkMap, err := symlinks.DownloadSymlinkMap(ctx, project, bucket)
 	if err != nil {
-		c.Err = fmt.Errorf("failed to get symlink map: %v", err)
-		return
+		return nil, nil, fmt.Errorf("failed to get symlink map: %w", err)
 	}
-	c.symlinkMap = symlinkMap
+	return project, symlinkMap, nil
 }
 
 func (c *storjClient) getProject() (*uplink.Project, error) {

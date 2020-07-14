@@ -17,6 +17,7 @@ package limiter
 import (
 	"context"
 	"io"
+	"sync"
 	"syscall"
 
 	"golang.org/x/sync/errgroup"
@@ -25,9 +26,10 @@ import (
 
 // JobLimiter runs jobs in parallel, up to a limit.
 type JobLimiter struct {
-	sem   *semaphore.Weighted
-	ctx   context.Context
-	group *errgroup.Group
+	sem     *semaphore.Weighted
+	semLock sync.Mutex
+	ctx     context.Context
+	group   *errgroup.Group
 }
 
 // NewJobLimiter creates a new JobLimiter instance limited to the given maximum
@@ -41,18 +43,31 @@ func NewJobLimiter(ctx context.Context, n int64) (*JobLimiter, context.Context) 
 	}, ctx
 }
 
-// AddJob waits until the number of running jobs is less than the specified limit,
-// then starts the given job in a goroutine. The call to AddJob will block until
-// the goroutine can be started, providing backpressure if desired.
+// SetConcurrency changes the maximum allowable concurrency. If jobs have
+// already been added when this is called, they will not count toward the
+// new limit.
+func (jl *JobLimiter) SetConcurrency(n int64) {
+	jl.semLock.Lock()
+	jl.sem = semaphore.NewWeighted(n)
+	jl.semLock.Unlock()
+}
+
+// AddJob waits until the number of running jobs is less than the specified
+// limit, then starts the given job in a goroutine. The call to AddJob will
+// block until the goroutine can be started, providing backpressure if desired.
 //
-// If the job returns non-nil, the context will be canceled. If the context is
-// canceled (because of a failed job or otherwise) the job might not run.
+// If the job returns non-nil, the JobLimiter's context will be canceled. If
+// the context is canceled (because of a failed job or otherwise) the job might
+// not run.
 func (jl *JobLimiter) AddJob(job func() error) {
-	if err := jl.sem.Acquire(jl.ctx, 1); err != nil {
+	jl.semLock.Lock()
+	sem := jl.sem
+	jl.semLock.Unlock()
+	if err := sem.Acquire(jl.ctx, 1); err != nil {
 		return
 	}
 	jl.group.Go(func() error {
-		defer jl.sem.Release(1)
+		defer sem.Release(1)
 		return job()
 	})
 }

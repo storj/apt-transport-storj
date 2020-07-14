@@ -37,6 +37,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"storj.io/uplink"
@@ -108,6 +109,9 @@ const (
 	defaultEncryptionPassphrase = "debian"
 	defaultDialTimeout          = 10 * time.Second
 	defaultMaxConcurrency       = 25
+
+	// no way to inspect this from uplink?
+	expectedTotalThreshold = 110
 )
 
 type storjClient struct {
@@ -154,6 +158,10 @@ func New() *Method {
 // waits for all Messages to be processed before exiting.
 func (m *Method) Run(ctx context.Context) {
 	m.send(capabilities())
+	warnMsg := checkFileDescriptorLimit(m.maxConcurrency)
+	if warnMsg != "" {
+		m.send(aptLogMessage(warnMsg))
+	}
 	if err := m.processMessages(ctx, m.inputStream); err != nil {
 		m.send(generalFailure(err))
 	}
@@ -256,6 +264,11 @@ func (m *Method) configure(msg *message.Message, jobLimiter *limiter.JobLimiter)
 			}
 			m.maxConcurrency = maxConcurrency
 			jobLimiter.SetConcurrency(int64(m.maxConcurrency))
+
+			warnMsg := checkFileDescriptorLimit(m.maxConcurrency)
+			if warnMsg != "" {
+				m.send(aptLogMessage(warnMsg))
+			}
 		}
 	}
 	return nil
@@ -417,6 +430,28 @@ func (m *Method) storjClient(ctx context.Context, satelliteAddr, apiKey, bucket 
 	}()
 
 	return client, nil
+}
+
+func checkFileDescriptorLimit(maxConcurrency int) (warnMsg string) {
+	const allowExtra = 128
+
+	// try to get RLIMIT_NOFILE at least up to maxConcurrency * RSConfig.TotalThreshold + allowExtra
+	var rLimit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rLimit); err != nil {
+		return "could not inspect limit on file descriptors: " + err.Error()
+	}
+	existingLimit := rLimit.Cur
+	rLimit.Cur = uint64(maxConcurrency*expectedTotalThreshold + allowExtra)
+	if rLimit.Cur > rLimit.Max {
+		// we're probably root?
+		rLimit.Max = rLimit.Cur
+	}
+	if existingLimit < rLimit.Cur {
+		if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &rLimit); err != nil {
+			return fmt.Sprintf("could not raise limit on file descriptors from %d to %d: %v", existingLimit, rLimit.Cur, err)
+		}
+	}
+	return ""
 }
 
 func doSetup(ctx context.Context, access *uplink.Access, bucket string, statusFunc func(string)) (*uplink.Project, symlinks.SymlinkMap, error) {

@@ -43,6 +43,7 @@ import (
 	"storj.io/uplink"
 
 	"storj.io/apt-transport-storj/common"
+	"storj.io/apt-transport-storj/limiter"
 	"storj.io/apt-transport-storj/message"
 	"storj.io/apt-transport-storj/symlinks"
 )
@@ -170,31 +171,34 @@ func capabilities() *message.Message {
 // processMessages loops over messages given on the input stream
 // and starts a goroutine to process each Message.
 func (m *Method) processMessages(ctx context.Context, input io.Reader) error {
-	scanner := bufio.NewScanner(input)
 	buffer := &bytes.Buffer{}
 	waitGroup, ctx := errgroup.WithContext(ctx)
-	for {
-		hasLine := scanner.Scan()
-		if hasLine {
-			line := fmt.Sprintf("%s\n", scanner.Text())
-			buffer.WriteString(line)
-			trimmed := strings.TrimRight(line, "\n")
+	inStream := input
+	if inFDReader, ok := input.(limiter.FDReader); ok {
+		inStream = limiter.NewFileReaderWithContext(ctx, inFDReader)
+	}
+	scanner := bufio.NewScanner(inStream)
+	for scanner.Scan() {
+		line := scanner.Text()
+		buffer.WriteString(line + "\n")
 
-			// Messages are terminated with a blank line. If a line with no content
-			// comes in and the buffer already has some content, it's assuming that
-			// the buffer currently contains a complete message ready to be processed.
-			if len(trimmed) == 0 && buffer.Len() > 3 {
-				err := m.handleBytes(ctx, waitGroup, buffer.Bytes())
-				if err != nil {
-					return err
-				}
-				buffer = &bytes.Buffer{}
+		// Messages are terminated with a blank line. If a line with no content
+		// comes in and the buffer already has some content, it's assuming that
+		// the buffer currently contains a complete message ready to be processed.
+		if len(line) == 0 && buffer.Len() > 3 {
+			err := m.handleBytes(ctx, waitGroup, buffer.Bytes())
+			if err != nil {
+				return err
 			}
-		} else {
-			break
+			buffer = &bytes.Buffer{}
 		}
 	}
-	return waitGroup.Wait()
+	scannerErr := scanner.Err()
+	err := waitGroup.Wait()
+	if err == nil {
+		err = scannerErr
+	}
+	return err
 }
 
 // handleBytes initializes a new Message and dispatches it according to

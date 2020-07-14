@@ -238,19 +238,3 @@ func (st *SyncState) Close() error {
 func (st *SyncState) Clear() error {
 	return EncodingError.Wrap(os.Remove(st.progressUpdateFilename))
 }
-
-// want to see:
-//
-// effectively stored Mbps
-// outgoing bw used (if possible)
-// objects stored/s
-// download Mbps
-// average object size
-// estimated time to phase complete
-// time elapsed
-// errors encountered
-// objects stored
-// total # objects
-
-// Effectively storing: 4.283 Mbps
-// Outgoing bw used:

@@ -19,12 +19,14 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"path"
 	"strings"
 
-	"github.com/zeebo/errs"
 	"storj.io/uplink"
+
+	"storj.io/apt-transport-storj/common"
 )
 
 const (
@@ -40,7 +42,7 @@ const (
 
 // ErrSymlinkSteps is returned when a symlink resolution operation exceeds the maximum number
 // of steps (MaxSymlinkResolveSteps)
-var ErrSymlinkSteps = errs.New("Maximum number of symlink resolution steps exceeded")
+var ErrSymlinkSteps = fmt.Errorf("maximum number of symlink resolution steps exceeded")
 
 // SymlinkMap represents a map of symlinks in a directory tree, with symlink locations
 // stored relative to the root of the tree.
@@ -136,8 +138,13 @@ func (m SymlinkMap) WriteTo(writer io.Writer) (n int64, err error) {
 	if err != nil {
 		return 0, err
 	}
+	// don't defer-close compressedWriter; we need the close to happen before
+	// we take cWriter.pos
 	_, err = io.Copy(compressedWriter, bytes.NewReader(symlinkJSON))
-	err = errs.Combine(err, compressedWriter.Close())
+	closeErr := compressedWriter.Close()
+	if err == nil {
+		err = closeErr
+	}
 	return cWriter.pos, err
 }
 
@@ -153,9 +160,7 @@ func (m *SymlinkMap) ReadFrom(reader io.Reader) (n int64, err error) {
 	if err != nil {
 		return 0, err
 	}
-	defer func() {
-		err = errs.Combine(err, compressedReader.Close())
-	}()
+	defer common.DeferClose(compressedReader, &err)
 	decoder := json.NewDecoder(compressedReader)
 	err = decoder.Decode(m)
 	return cReader.pos, err
@@ -183,7 +188,7 @@ func DownloadSymlinkMap(ctx context.Context, project *uplink.Project, bucket str
 	if err != nil {
 		return nil, err
 	}
-	defer func() { err = errs.Combine(err, downloadObj.Close()) }()
+	defer common.DeferClose(downloadObj, &err)
 	symlinkMap = NewSymlinkMap()
 	_, err = symlinkMap.ReadFrom(downloadObj)
 	if err != nil {

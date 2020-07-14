@@ -33,3 +33,17 @@ type FileEntry struct {
 // FileMap maps filenames (relative to the mirror root) to FileEntry records. It may describe
 // files on the local host, or on the upstream mirror, or in the downstream Storj bucket.
 type FileMap map[string]FileEntry
+
+// Closeable is an interface matching things with a Close method.
+type Closeable interface {
+	Close() error
+}
+
+// DeferClose defers a Close() call which captures the error from the close (but only keeps
+// the error if an error does not already exist).
+func DeferClose(obj Closeable, errP *error) {
+	closeErr := obj.Close()
+	if *errP == nil {
+		*errP = closeErr
+	}
+}

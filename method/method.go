@@ -38,7 +38,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zeebo/errs"
 	"golang.org/x/sync/errgroup"
 	"storj.io/uplink"
 
@@ -227,17 +226,17 @@ func (m *Method) configure(msg *message.Message) error {
 	for _, f := range items {
 		config := strings.Split(f.Value, "=")
 		if len(config) != 2 {
-			return errs.New("Invalid configuration item %q", f.Value)
+			return fmt.Errorf("invalid configuration item %q", f.Value)
 		}
 		value, err := url.PathUnescape(config[1])
 		if err != nil {
-			return errs.New("Bad encoding on configuration item %q: %v", f.Value, err)
+			return fmt.Errorf("bad encoding on configuration item %q: %v", f.Value, err)
 		}
 		switch config[0] {
 		case configItemDialTimeout:
 			timeout, err := time.ParseDuration(value)
 			if err != nil {
-				return errs.New("Invalid value for %s: %s", config[0], err)
+				return fmt.Errorf("invalid value for %s: %s", config[0], err)
 			}
 			m.dialTimeout = timeout
 		case configItemEncryptionPassphrase:
@@ -283,10 +282,10 @@ func (m *Method) storjDebURIParse(uri string) (satelliteAddress, apiKey, bucket,
 
 // uriAcquire downloads and stores objects from S3 based on the contents
 // of the provided Message.
-func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) error {
+func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) (err error) {
 	uri, hasField := msg.GetFieldValue(fieldNameURI)
 	if !hasField {
-		return errs.New("acquire message missing required field: URI")
+		return fmt.Errorf("acquire message missing required field: URI")
 	}
 	satelliteAddr, apiKey, bucket, pathKey, err := m.storjDebURIParse(uri)
 	if err != nil {
@@ -300,7 +299,7 @@ func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) error {
 
 	filename, hasField := msg.GetFieldValue(fieldNameFilename)
 	if !hasField {
-		return errs.New("acquire message missing required field: Filename")
+		return fmt.Errorf("acquire message missing required field: Filename")
 	}
 	var lastModifiedInAPT time.Time
 	lastModifiedStr, hasField := msg.GetFieldValue(fieldNameLastModified)
@@ -318,6 +317,7 @@ func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) error {
 		m.send(notFound(uri))
 		return nil
 	}
+	defer common.DeferClose(download, &err)
 	downloadInfo := download.Info()
 	expectedLen := downloadInfo.System.ContentLength
 	lastModifiedInStorj := downloadInfo.System.Created
@@ -338,9 +338,7 @@ func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) error {
 	if err != nil {
 		return err
 	}
-	defer func() {
-		err = errs.Combine(err, file.Close())
-	}()
+	defer common.DeferClose(file, &err)
 
 	numBytes, err := io.Copy(file, download)
 	if err != nil {

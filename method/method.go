@@ -246,13 +246,13 @@ func (m *Method) configure(msg *message.Message) error {
 	return nil
 }
 
-func (m *Method) getClient(ctx context.Context, satelliteAddr, apiKey, bucket string) (_ *storjClient, err error) {
+func (m *Method) getClient(ctx context.Context, satelliteAddr, apiKey, bucket string, statusFunc func(string)) (_ *storjClient, err error) {
 	m.clientMapLock.Lock()
 	defer m.clientMapLock.Unlock()
 
 	client, ok := m.clients[apiKeyAndBucket{apiKey, bucket}]
 	if !ok {
-		client, err = m.storjClient(ctx, satelliteAddr, apiKey, bucket)
+		client, err = m.storjClient(ctx, satelliteAddr, apiKey, bucket, statusFunc)
 		if err != nil {
 			return nil, err
 		}
@@ -292,7 +292,10 @@ func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) (err erro
 		return err
 	}
 	m.send(aptLogMessage("satelliteAddr=%q, apiKey=%q, bucket=%q, pathKey=%q", satelliteAddr, apiKey, bucket, pathKey))
-	client, err := m.getClient(ctx, satelliteAddr, apiKey, bucket)
+	statusFunc := func(s string) {
+		m.send(requestStatus(uri, s))
+	}
+	client, err := m.getClient(ctx, satelliteAddr, apiKey, bucket, statusFunc)
 	if err != nil {
 		return err
 	}
@@ -354,22 +357,27 @@ func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) (err erro
 
 // storjClient returns a configured and opened Project handle, which can be used
 // to download specific paths within the project (if the api key allows it).
-func (m *Method) storjClient(ctx context.Context, satelliteAddr, apiKey, bucket string) (*storjClient, error) {
+func (m *Method) storjClient(ctx context.Context, satelliteAddr, apiKey, bucket string, statusFunc func(string)) (*storjClient, error) {
 	uplinkConfig := uplink.Config{
 		UserAgent:   aptTransportUserAgent,
 		DialTimeout: m.dialTimeout,
 	}
+	shortForm := satelliteAddr
+	if ind := strings.Index(satelliteAddr, "@"); ind >= 0 {
+		shortForm = satelliteAddr[ind+1:]
+	}
+	statusFunc("Connecting to " + shortForm)
 	access, err := uplinkConfig.RequestAccessWithPassphrase(ctx, satelliteAddr, apiKey, m.encryptionPassphrase)
 	if err != nil {
 		return nil, err
 	}
 	client := &storjClient{}
 	client.ready = sync.NewCond(&client.locker)
-	go client.doSetup(ctx, access, bucket)
+	go client.doSetup(ctx, access, bucket, statusFunc)
 	return client, nil
 }
 
-func (c *storjClient) doSetup(ctx context.Context, access *uplink.Access, bucket string) {
+func (c *storjClient) doSetup(ctx context.Context, access *uplink.Access, bucket string, statusFunc func(string)) {
 	defer c.ready.Broadcast()
 
 	project, err := uplink.OpenProject(ctx, access)
@@ -378,6 +386,7 @@ func (c *storjClient) doSetup(ctx context.Context, access *uplink.Access, bucket
 		return
 	}
 	c.project = project
+	statusFunc("Fetching symlink map")
 	symlinkMap, err := symlinks.DownloadSymlinkMap(ctx, project, bucket)
 	if err != nil {
 		c.Err = fmt.Errorf("failed to get symlink map: %v", err)

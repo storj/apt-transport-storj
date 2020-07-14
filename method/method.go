@@ -126,8 +126,8 @@ type apiKeyAndBucket struct {
 // A Method implements the logic to process incoming apt messages and respond
 // accordingly.
 type Method struct {
-	stdin                io.Reader
-	stdout               io.Writer
+	inputStream          io.Reader
+	outputStream         io.Writer
 	clientMapLock        sync.Mutex
 	clients              map[apiKeyAndBucket]*storjClient
 	encryptionPassphrase string
@@ -138,8 +138,8 @@ type Method struct {
 // os.Stdout.
 func New() *Method {
 	return &Method{
-		stdin:                os.Stdin,
-		stdout:               os.Stdout,
+		inputStream:          os.Stdin,
+		outputStream:         os.Stdout,
 		clients:              make(map[apiKeyAndBucket]*storjClient),
 		encryptionPassphrase: defaultEncryptionPassphrase,
 		dialTimeout:          defaultDialTimeout,
@@ -147,11 +147,11 @@ func New() *Method {
 }
 
 // Run flushes the Method's capabilities and then begins reading messages from
-// m.stdin. Results are written to m.stdout. The running Method waits for all
-// Messages to be processed before exiting.
+// m.inputStream. Results are written to m.outputStream. The running Method
+// waits for all Messages to be processed before exiting.
 func (m *Method) Run(ctx context.Context) {
 	m.send(capabilities())
-	if err := m.processMessages(ctx, m.stdin); err != nil {
+	if err := m.processMessages(ctx, m.inputStream); err != nil {
 		m.send(generalFailure(err))
 	}
 }
@@ -523,9 +523,9 @@ func generalFailure(err error) *message.Message {
 	return &message.Message{Header: h, Fields: []*message.Field{messageField}}
 }
 
-// send formats a message and sends it back to APT, via the stdout stream.
+// send formats a message and sends it back to APT, via the outputStream.
 func (m *Method) send(msg *message.Message) {
-	_, err := m.stdout.Write([]byte(msg.String() + "\n"))
+	_, err := m.outputStream.Write([]byte(msg.String() + "\n"))
 	if err != nil {
 		// if we can't write that message, we probably can't write a general failure either.
 		panic(err)

@@ -39,7 +39,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sync/errgroup"
 	"storj.io/uplink"
 
 	"storj.io/apt-transport-storj/common"
@@ -107,6 +106,7 @@ const (
 const (
 	defaultEncryptionPassphrase = "debian"
 	defaultDialTimeout          = 10 * time.Second
+	defaultMaxConcurrency       = 25
 )
 
 type storjClient struct {
@@ -171,7 +171,7 @@ func capabilities() *message.Message {
 // and starts a goroutine to process each Message.
 func (m *Method) processMessages(ctx context.Context, input io.Reader) error {
 	buffer := &bytes.Buffer{}
-	waitGroup, ctx := errgroup.WithContext(ctx)
+	jobLimiter, ctx := limiter.NewJobLimiter(ctx, defaultMaxConcurrency)
 	inStream := input
 	if inFDReader, ok := input.(limiter.FDReader); ok {
 		inStream = limiter.NewFileReaderWithContext(ctx, inFDReader)
@@ -185,7 +185,7 @@ func (m *Method) processMessages(ctx context.Context, input io.Reader) error {
 		// comes in and the buffer already has some content, it's assuming that
 		// the buffer currently contains a complete message ready to be processed.
 		if len(line) == 0 && buffer.Len() > 3 {
-			err := m.handleBytes(ctx, waitGroup, buffer.Bytes())
+			err := m.handleBytes(ctx, jobLimiter, buffer.Bytes())
 			if err != nil {
 				return err
 			}
@@ -193,7 +193,7 @@ func (m *Method) processMessages(ctx context.Context, input io.Reader) error {
 		}
 	}
 	scannerErr := scanner.Err()
-	err := waitGroup.Wait()
+	err := jobLimiter.Wait()
 	if err == nil {
 		err = scannerErr
 	}
@@ -202,15 +202,19 @@ func (m *Method) processMessages(ctx context.Context, input io.Reader) error {
 
 // handleBytes initializes a new Message and dispatches it according to
 // the Message.Header.Status value.
-func (m *Method) handleBytes(ctx context.Context, waitGroup *errgroup.Group, b []byte) error {
+func (m *Method) handleBytes(ctx context.Context, jobLimiter *limiter.JobLimiter, b []byte) error {
 	msg, err := message.FromBytes(b)
 	if err != nil {
 		return err
 	}
 	if msg.Header.Status == headerCodeURIAcquire {
 		// URI Acquire message; APT wants us to get a file
-		waitGroup.Go(func() error {
-			return m.uriAcquire(ctx, msg)
+		jobLimiter.AddJob(func() error {
+			err := m.uriAcquire(ctx, msg)
+			if err != nil {
+				m.send(aptLogMessage("uriAcquire failed: %v", err))
+			}
+			return err
 		})
 	} else if msg.Header.Status == headerCodeConfiguration {
 		// Configuration message; APT is sending its config to us. Process this

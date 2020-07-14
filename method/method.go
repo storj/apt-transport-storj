@@ -26,6 +26,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -309,15 +310,14 @@ func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) (err erro
 	if hasField {
 		lastModifiedInAPT, err = time.Parse(time.RFC1123, lastModifiedStr)
 		if err != nil {
-			// ignore
+			m.send(aptLogMessage("ignoring invalid time string: %q (%v)", lastModifiedStr, err))
 			lastModifiedInAPT = time.Time{}
 		}
 	}
 
 	download, err := client.DownloadObject(ctx, bucket, pathKey, nil)
 	if err != nil {
-		m.send(aptLogMessage("error from remote was: %v", err))
-		m.send(notFound(uri))
+		m.reportClientFailure(ctx, uri, err)
 		return nil
 	}
 	defer common.DeferClose(download, &err)
@@ -345,7 +345,8 @@ func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) (err erro
 
 	numBytes, err := io.Copy(file, download)
 	if err != nil {
-		return err
+		m.reportClientFailure(ctx, uri, err)
+		return nil
 	}
 	doneMsg, err := uriDone(uri, numBytes, lastModifiedInStorj, filename, false)
 	if err != nil {
@@ -353,6 +354,22 @@ func (m *Method) uriAcquire(ctx context.Context, msg *message.Message) (err erro
 	}
 	m.send(doneMsg)
 	return nil
+}
+
+func (m *Method) reportClientFailure(ctx context.Context, uri string, err error) {
+	if ctx.Err() != nil {
+		// if context has already been closed, do not report errors for individual URIs.
+		// We are already tearing everything down, and all errors are likely to be due
+		// to that. A general failure will be reported.
+		return
+	}
+	var msg *message.Message
+	if errors.Is(err, uplink.ErrObjectNotFound) {
+		msg = notFound(uri)
+	} else {
+		msg = uriFailure(uri, err.Error())
+	}
+	m.send(msg)
 }
 
 // storjClient returns a configured and opened Project handle, which can be used
@@ -514,9 +531,19 @@ func uriDone(objectURI string, size int64, t time.Time, filename string, imsHit 
 // Message: The specified key does not exist.
 // URI: storj-apt://us-central-1.tardigrade.io:7777/apiKeyString/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
 func notFound(objectURI string) *message.Message {
+	return uriFailure(objectURI, fieldValueNotFound)
+}
+
+// uriFailure constructs a Message that when printed looks like the following
+// example:
+//
+// 400 URI Failure
+// Message: A bad thing went wrong.
+// URI: storj-apt://us-central-1.tardigrade.io:7777/apiKeyString/bucket-name/apt/trusty/riemann-sumd_0.7.2-1_all.deb
+func uriFailure(objectURI string, messageText string) *message.Message {
 	h := header(headerCodeURIFailure, headerDescriptionURIFailure)
 	uriField := field(fieldNameURI, objectURI)
-	messageField := field(fieldNameMessage, fieldValueNotFound)
+	messageField := field(fieldNameMessage, messageText)
 	return &message.Message{Header: h, Fields: []*message.Field{uriField, messageField}}
 }
 

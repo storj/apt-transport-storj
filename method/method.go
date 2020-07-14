@@ -72,12 +72,11 @@ const (
 	headerDescriptionURIDone        = "URI Done"
 	headerDescriptionURIFailure     = "URI Failure"
 	headerDescriptionGeneralFailure = "General Failure"
-	headerDescriptionURIAcquire     = "URI Acquire"
-	headerDescriptionConfiguration  = "Configuration"
+	// headerDescriptionURIAcquire     = "URI Acquire"
+	// headerDescriptionConfiguration  = "Configuration"
 )
 
 const (
-	fieldNameCapabilities   = "Capabilities"
 	fieldNameConfigItem     = "Config-Item"
 	fieldNameSendConfig     = "Send-Config"
 	fieldNamePipeline       = "Pipeline"

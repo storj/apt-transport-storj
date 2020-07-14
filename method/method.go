@@ -101,6 +101,7 @@ const (
 const (
 	configItemEncryptionPassphrase = "Acquire::Storj::EncryptionPassphrase"
 	configItemDialTimeout          = "Acquire::Storj::ConnectionTimeout"
+	configItemMaxConcurrency       = "Acquire::Storj::MaxConcurrency"
 )
 
 const (
@@ -132,6 +133,7 @@ type Method struct {
 	clients              map[apiKeyAndBucket]*storjClient
 	encryptionPassphrase string
 	dialTimeout          time.Duration
+	maxConcurrency       int
 }
 
 // New returns a new Method configured to read from os.Stdin and write to
@@ -143,6 +145,7 @@ func New() *Method {
 		clients:              make(map[apiKeyAndBucket]*storjClient),
 		encryptionPassphrase: defaultEncryptionPassphrase,
 		dialTimeout:          defaultDialTimeout,
+		maxConcurrency:       defaultMaxConcurrency,
 	}
 }
 
@@ -171,7 +174,7 @@ func capabilities() *message.Message {
 // and starts a goroutine to process each Message.
 func (m *Method) processMessages(ctx context.Context, input io.Reader) error {
 	buffer := &bytes.Buffer{}
-	jobLimiter, ctx := limiter.NewJobLimiter(ctx, defaultMaxConcurrency)
+	jobLimiter, ctx := limiter.NewJobLimiter(ctx, int64(m.maxConcurrency))
 	inStream := input
 	if inFDReader, ok := input.(limiter.FDReader); ok {
 		inStream = limiter.NewFileReaderWithContext(ctx, inFDReader)
@@ -219,13 +222,14 @@ func (m *Method) handleBytes(ctx context.Context, jobLimiter *limiter.JobLimiter
 	} else if msg.Header.Status == headerCodeConfiguration {
 		// Configuration message; APT is sending its config to us. Process this
 		// synchronously so that following Acquire messages are sure to see the
-		// results of the configure step.
-		err = m.configure(msg)
+		// results of the configure step. It seems to be the case that this
+		// type of message will always arrive before any URI Acquire messages.
+		err = m.configure(msg, jobLimiter)
 	}
 	return err
 }
 
-func (m *Method) configure(msg *message.Message) error {
+func (m *Method) configure(msg *message.Message, jobLimiter *limiter.JobLimiter) error {
 	items := msg.GetFieldList(fieldNameConfigItem)
 	for _, f := range items {
 		config := strings.Split(f.Value, "=")
@@ -245,6 +249,13 @@ func (m *Method) configure(msg *message.Message) error {
 			m.dialTimeout = timeout
 		case configItemEncryptionPassphrase:
 			m.encryptionPassphrase = value
+		case configItemMaxConcurrency:
+			maxConcurrency, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("invalid value for %s: %s", config[0], err)
+			}
+			m.maxConcurrency = maxConcurrency
+			jobLimiter.SetConcurrency(int64(m.maxConcurrency))
 		}
 	}
 	return nil

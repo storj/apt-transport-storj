@@ -2,8 +2,14 @@ apt-transport-storj (0.0.2) UNRELEASED; urgency=low
 
   * Change name to clarify scope of project
   * Add handling for symlinks on mirror
+  * Limit maximum number of concurrent downloads, with configurable limit
+  * Raise file descriptor limit as required, if possible (Storj file
+    downloads need a lot of file descriptors, to get pieces from many
+    storage nodes in parallel)
+  * Improved error handling and reporting
+  * Fix file descriptor leak when acquiring
 
- -- paul cannon <pik@debian.org>  Sat, 11 Jul 2020 12:54:29 -0500
+ -- paul cannon <thepaul@storj.io>  Tue, 14 Jul 2020 15:45:15 -0500
 
 apt-transport-tardigrade (0.0.1) UNRELEASED; urgency=low
 

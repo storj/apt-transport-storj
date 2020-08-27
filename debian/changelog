@@ -9,7 +9,7 @@ apt-transport-storj (0.0.2) UNRELEASED; urgency=low
   * Improved error handling and reporting
   * Fix file descriptor leak when acquiring
 
- -- paul cannon <thepaul@storj.io>  Tue, 14 Jul 2020 15:45:15 -0500
+ -- paul cannon <pik@debian.org>  Tue, 14 Jul 2020 15:45:15 -0500
 
 apt-transport-tardigrade (0.0.1) UNRELEASED; urgency=low
 

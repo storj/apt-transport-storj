@@ -2,13 +2,24 @@ Source: apt-transport-storj
 Section: admin
 Priority: optional
 Maintainer: paul cannon <pik@debian.org>
-Build-Depends: debhelper-compat (= 12), golang-go (>= 1.13)
+Build-Depends: debhelper-compat (= 12),
+               dh-golang,
+               golang-go (>= 1.13),
+               golang-go.uber-zap-dev,
+               golang-golang-x-sync-dev,
+               golang-golang-x-sys-dev,
+               golang-golang-x-crypto-dev,
+               golang-github-gogo-protobuf-dev,
+               golang-github-minio-sha256-simd-dev,
+               golang-github-stretchr-testify-dev
 Standards-Version: 4.5.0
+XS-Go-Import-Path: storj.io/apt-transport-storj
 Homepage: https://github.com/storj/apt-transport-storj
 
 Package: apt-transport-storj
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
+Built-Using: ${misc:Built-Using}
 Description: APT transport using the Storj network
  The apt-transport-storj package provides support for downloading APT
  package lists and packages via the Storj network (storj.io). Storj

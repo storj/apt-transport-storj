@@ -1,10 +1,12 @@
 #!/usr/bin/make -f
 
-override_dh_auto_build:
-	go build -o storj-apt
+export DH_GOLANG_EXCLUDES := mirroring
 
-override_dh_auto_clean:
-	$(RM) storj-apt
+override_dh_auto_build:
+	dh_auto_build
+	mv _build/bin/apt-transport-storj _build/bin/storj-apt
+
+override_dh_auto_install:
 
 %:
-	dh $@
+	dh $@ --builddirectory=_build --buildsystem=golang --with=golang

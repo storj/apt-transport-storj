@@ -1,3 +1,7 @@
-Example APT source (repository freely provided to the Debian community by Tardigrade.io):
+Example APT sources (repository freely provided to the Debian and Ubuntu communities by Tardigrade.io):
 
+(Debian unstable)
 deb storj-apt://12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S@us-central-1.tardigrade.io:7777/178ei7NN2nHMkjAcFyWcX8khPU4qhjjdpGNFu45X52CsVmUBiaD7HU3G7fmzpzTxQo75z9mhzjWybZCCVnFsgdBPLxor6Q79urKqwBQSKPNypdwSgMU7aNAACMT4hL/debian unstable main contrib non-free
+
+(Ubuntu groovy)
+deb storj-apt://12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S@us-central-1.tardigrade.io:7777/178ei7NN2nHMkjAcFyWcX8khPU4qhjjdpGNFu45X52CsVmUBiaD7HU3G7fmzpzTxQo75z9mhzjWybZCCVnFsgdBPLxor6Q79urKqwBQSKPNypdwSgMU7aNAACMT4hL/ubuntu groovy main universe multiverse

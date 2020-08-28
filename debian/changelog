@@ -1,3 +1,11 @@
+apt-transport-storj (0.0.3) UNRELEASED; urgency=low
+
+  * Vendor all golang dependencies that aren't packaged as debs
+  * Update storj.io/uplink and its dependencies to get the updated
+    license information they have now
+
+ -- paul cannon <pik@debian.org>  Thu, 27 Aug 2020 23:31:29 -0500
+
 apt-transport-storj (0.0.2) UNRELEASED; urgency=low
 
   * Change name to clarify scope of project

@@ -373,43 +373,6 @@ func convertProtoToBucket(pbBucket *pb.Bucket) (bucket storj.Bucket, err error) 
 	}, nil
 }
 
-// SetBucketAttributionParams parameters for SetBucketAttribution method.
-type SetBucketAttributionParams struct {
-	Bucket    string
-	PartnerID uuid.UUID
-}
-
-func (params *SetBucketAttributionParams) toRequest(header *pb.RequestHeader) *pb.BucketSetAttributionRequest {
-	var bytes []byte
-	if !params.PartnerID.IsZero() {
-		bytes = params.PartnerID[:]
-	}
-
-	return &pb.BucketSetAttributionRequest{
-		Header:    header,
-		Name:      []byte(params.Bucket),
-		PartnerId: bytes,
-	}
-}
-
-// BatchItem returns single item for batch request.
-func (params *SetBucketAttributionParams) BatchItem() *pb.BatchRequestItem {
-	return &pb.BatchRequestItem{
-		Request: &pb.BatchRequestItem_BucketSetAttribution{
-			BucketSetAttribution: params.toRequest(nil),
-		},
-	}
-}
-
-// SetBucketAttribution tries to set the attribution information on the bucket.
-func (client *Client) SetBucketAttribution(ctx context.Context, params SetBucketAttributionParams) (err error) {
-	defer mon.Task()(&ctx)(&err)
-
-	_, err = client.client.SetBucketAttribution(ctx, params.toRequest(client.header()))
-
-	return Error.Wrap(err)
-}
-
 // BeginObjectParams parmaters for BeginObject method.
 type BeginObjectParams struct {
 	Bucket               []byte
@@ -647,28 +610,26 @@ func (params *BeginDeleteObjectParams) BatchItem() *pb.BatchRequestItem {
 
 // BeginDeleteObjectResponse response for BeginDeleteObject request.
 type BeginDeleteObjectResponse struct {
-	StreamID storj.StreamID
 }
 
 func newBeginDeleteObjectResponse(response *pb.ObjectBeginDeleteResponse) BeginDeleteObjectResponse {
-	return BeginDeleteObjectResponse{
-		StreamID: response.StreamId,
-	}
+	return BeginDeleteObjectResponse{}
 }
 
 // BeginDeleteObject begins object deletion process.
-func (client *Client) BeginDeleteObject(ctx context.Context, params BeginDeleteObjectParams) (_ storj.StreamID, _ storj.ObjectInfo, err error) {
+func (client *Client) BeginDeleteObject(ctx context.Context, params BeginDeleteObjectParams) (_ storj.ObjectInfo, err error) {
 	defer mon.Task()(&ctx)(&err)
 
+	// response.StreamID is not processed because satellite will always return nil
 	response, err := client.client.BeginDeleteObject(ctx, params.toRequest(client.header()))
 	if err != nil {
 		if errs2.IsRPC(err, rpcstatus.NotFound) {
-			return storj.StreamID{}, storj.ObjectInfo{}, storj.ErrObjectNotFound.Wrap(err)
+			return storj.ObjectInfo{}, storj.ErrObjectNotFound.Wrap(err)
 		}
-		return storj.StreamID{}, storj.ObjectInfo{}, Error.Wrap(err)
+		return storj.ObjectInfo{}, Error.Wrap(err)
 	}
 
-	return response.StreamId, newObjectInfo(response.Object), nil
+	return newObjectInfo(response.Object), nil
 }
 
 // FinishDeleteObjectParams parameters for FinishDeleteObject method.
@@ -1145,6 +1106,25 @@ func (client *Client) ListSegments(ctx context.Context, params ListSegmentsParam
 
 	listResponse := newListSegmentsResponse(response)
 	return listResponse.Items, listResponse.More, Error.Wrap(err)
+}
+
+// RevokeAPIKey revokes the APIKey provided in the params.
+func (client *Client) RevokeAPIKey(ctx context.Context, params RevokeAPIKeyParams) (err error) {
+	defer mon.Task()(&ctx)(&err)
+	_, err = client.client.RevokeAPIKey(ctx, params.toRequest(client.header()))
+	return Error.Wrap(err)
+}
+
+// RevokeAPIKeyParams contain params for a RevokeAPIKey request.
+type RevokeAPIKeyParams struct {
+	APIKey []byte
+}
+
+func (r RevokeAPIKeyParams) toRequest(header *pb.RequestHeader) *pb.RevokeAPIKeyRequest {
+	return &pb.RevokeAPIKeyRequest{
+		Header: header,
+		ApiKey: r.APIKey,
+	}
 }
 
 // Batch sends multiple requests in one batch.

@@ -5,6 +5,7 @@ package uplink
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"storj.io/common/pb"
 	"storj.io/common/storj"
 	"storj.io/uplink/internal/expose"
+	"storj.io/uplink/private/metainfo"
 )
 
 // An Access Grant contains everything to access a project and specific buckets.
@@ -214,6 +216,8 @@ func enablePathEncryptionBypass(access *Access) error {
 //
 // Prefixes, if provided, restrict the access grant (and internal encryption information)
 // to only contain enough information to allow access to just those prefixes.
+//
+// To revoke an access grant see the Project.RevokeAccess method.
 func (access *Access) Share(permission Permission, prefixes ...SharePrefix) (*Access, error) {
 	if permission == (Permission{}) {
 		return nil, packageError.New("permission is empty")
@@ -284,6 +288,26 @@ func (access *Access) Share(permission Permission, prefixes ...SharePrefix) (*Ac
 	return restrictedAccess, nil
 }
 
+// RevokeAccess revokes the API key embedded in the provided access grant.
+//
+// When an access grant is revoked, it will also revoke any further-restricted
+// access grants created (via the Access.Share method) from the revoked access
+// grant.
+//
+// An access grant is authorized to revoke any further-restricted access grant
+// created from it. An access grant cannot revoke itself. An unauthorized
+// request will return an error.
+//
+// There may be a delay between a successful revocation request and actual
+// revocation, depending on the satellite's access caching policies.
+func (project *Project) RevokeAccess(ctx context.Context, access *Access) (err error) {
+	defer mon.Func().RestartTrace(&ctx)(&err)
+
+	return project.metainfo.RevokeAPIKey(ctx, metainfo.RevokeAPIKeyParams{
+		APIKey: access.apiKey.SerializeRaw(),
+	})
+}
+
 // ReadOnlyPermission returns a Permission that allows reading and listing
 // (if the parent access grant already allows those things).
 func ReadOnlyPermission() Permission {
@@ -311,4 +335,26 @@ func FullPermission() Permission {
 		AllowList:     true,
 		AllowDelete:   true,
 	}
+}
+
+// OverrideEncryptionKey overrides the root encryption key for the prefix in
+// bucket with encryptionKey.
+//
+// This function is useful for overriding the encryption key in user-specific
+// access grants when implementing multitenancy in a single app bucket.
+// See the relevant section in the package documentation.
+func (access *Access) OverrideEncryptionKey(bucket, prefix string, encryptionKey *EncryptionKey) error {
+	if !strings.HasSuffix(prefix, "/") {
+		return errors.New("prefix must end with slash")
+	}
+
+	store := access.encAccess.Store()
+
+	unencPath := paths.NewUnencrypted(prefix)
+	encPath, err := encryption.EncryptPrefixWithStoreCipher(bucket, unencPath, store)
+	if err != nil {
+		return err
+	}
+
+	return store.Add(bucket, unencPath, encPath, *encryptionKey.key)
 }

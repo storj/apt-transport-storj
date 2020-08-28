@@ -4,6 +4,8 @@
 
 Package drpcstream sends protobufs using the dprc wire protocol.
 
+![Stream state machine diagram](./state.png)
+
 ## Usage
 
 #### type Options
@@ -144,4 +146,4 @@ if the stream is already terminated.
 ```go
 func (s *Stream) Terminated() <-chan struct{}
 ```
-Terminated returns a channel when the stream has been terminated.
+Terminated returns a channel that is closed when the stream has been terminated.

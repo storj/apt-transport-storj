@@ -75,7 +75,7 @@ func SyncMirror(ctx context.Context, logger *zap.Logger, upstreamMirror, upstrea
 		logger.Warn("could not inspect limit on file descriptors", zap.Error(err))
 	} else {
 		existingLimit := rLimit.Cur
-		rLimit.Cur = uint64(*concurrentUploads * 120)
+		rLimit.Cur = uint64(*concurrentUploads * 150)
 		if rLimit.Cur > rLimit.Max {
 			rLimit.Cur = rLimit.Max
 		}

@@ -4,27 +4,26 @@
 package storj
 
 import (
-	"crypto/sha256"
 	"crypto/x509/pkix"
 	"database/sql/driver"
-	"encoding/json"
+	"encoding/binary"
 	"math/bits"
 
-	"github.com/btcsuite/btcutil/base58"
 	"github.com/zeebo/errs"
 
+	"storj.io/common/base58"
 	"storj.io/common/peertls/extensions"
 )
 
 var (
 	// ErrNodeID is used when something goes wrong with a node id.
-	ErrNodeID = errs.Class("node ID error")
+	ErrNodeID = errs.Class("node ID")
 	// ErrVersion is used for identity version related errors.
-	ErrVersion = errs.Class("node ID version error")
+	ErrVersion = errs.Class("node ID version")
 )
 
 // NodeIDSize is the byte length of a NodeID.
-const NodeIDSize = sha256.Size
+const NodeIDSize = 32
 
 // NodeID is a unique node identifier.
 type NodeID [NodeIDSize]byte
@@ -112,14 +111,69 @@ func (id NodeID) Bytes() []byte { return id[:] }
 
 // Less returns whether id is smaller than other in lexicographic order.
 func (id NodeID) Less(other NodeID) bool {
-	for k, v := range id {
-		if v < other[k] {
-			return true
-		} else if v > other[k] {
-			return false
-		}
+	a0, b0 := binary.BigEndian.Uint64(id[0:]), binary.BigEndian.Uint64(other[0:])
+	if a0 < b0 {
+		return true
+	} else if a0 > b0 {
+		return false
 	}
+
+	a1, b1 := binary.BigEndian.Uint64(id[8:]), binary.BigEndian.Uint64(other[8:])
+	if a1 < b1 {
+		return true
+	} else if a1 > b1 {
+		return false
+	}
+
+	a2, b2 := binary.BigEndian.Uint64(id[16:]), binary.BigEndian.Uint64(other[16:])
+	if a2 < b2 {
+		return true
+	} else if a2 > b2 {
+		return false
+	}
+
+	a3, b3 := binary.BigEndian.Uint64(id[24:]), binary.BigEndian.Uint64(other[24:])
+	if a3 < b3 {
+		return true
+	} else if a3 > b3 {
+		return false
+	}
+
 	return false
+}
+
+// Compare returns an integer comparing id and other lexicographically.
+// The result will be 0 if id==other, -1 if id < other, and +1 if id > other.
+func (id NodeID) Compare(other NodeID) int {
+	a0, b0 := binary.BigEndian.Uint64(id[0:]), binary.BigEndian.Uint64(other[0:])
+	if a0 < b0 {
+		return -1
+	} else if a0 > b0 {
+		return 1
+	}
+
+	a1, b1 := binary.BigEndian.Uint64(id[8:]), binary.BigEndian.Uint64(other[8:])
+	if a1 < b1 {
+		return -1
+	} else if a1 > b1 {
+		return 1
+	}
+
+	a2, b2 := binary.BigEndian.Uint64(id[16:]), binary.BigEndian.Uint64(other[16:])
+	if a2 < b2 {
+		return -1
+	} else if a2 > b2 {
+		return 1
+	}
+
+	a3, b3 := binary.BigEndian.Uint64(id[24:]), binary.BigEndian.Uint64(other[24:])
+	if a3 < b3 {
+		return -1
+	} else if a3 > b3 {
+		return 1
+	}
+
+	return 0
 }
 
 // Version returns the version of the identity format.
@@ -197,11 +251,6 @@ func (id *NodeID) Size() int {
 	return len(id)
 }
 
-// MarshalJSON serializes a node ID to a json string as bytes.
-func (id NodeID) MarshalJSON() ([]byte, error) {
-	return []byte(`"` + id.String() + `"`), nil
-}
-
 // Value converts a NodeID to a database field.
 func (id NodeID) Value() (driver.Value, error) {
 	return id.Bytes(), nil
@@ -218,15 +267,15 @@ func (id *NodeID) Scan(src interface{}) (err error) {
 	return err
 }
 
-// UnmarshalJSON deserializes a json string (as bytes) to a node ID.
-func (id *NodeID) UnmarshalJSON(data []byte) error {
-	var unquoted string
-	err := json.Unmarshal(data, &unquoted)
-	if err != nil {
-		return err
-	}
+// MarshalText serializes a node ID to a base58 string.
+func (id NodeID) MarshalText() ([]byte, error) {
+	return []byte(id.String()), nil
+}
 
-	*id, err = NodeIDFromString(unquoted)
+// UnmarshalText deserializes a base58 string to a node ID.
+func (id *NodeID) UnmarshalText(data []byte) error {
+	var err error
+	*id, err = NodeIDFromString(string(data))
 	if err != nil {
 		return err
 	}
@@ -258,3 +307,29 @@ func (n NodeIDList) Swap(i, j int) { n[i], n[j] = n[j], n[i] }
 
 // Less implements sort.Interface.Less().
 func (n NodeIDList) Less(i, j int) bool { return n[i].Less(n[j]) }
+
+// Contains tests if the node IDs contain id.
+func (n NodeIDList) Contains(id NodeID) bool {
+	for _, nid := range n {
+		if nid == id {
+			return true
+		}
+	}
+	return false
+}
+
+// Unique returns slice of the unique node IDs.
+func (n NodeIDList) Unique() NodeIDList {
+	var result []NodeID
+next:
+	for _, id := range n {
+		for _, added := range result {
+			if added == id {
+				continue next
+			}
+		}
+		result = append(result, id)
+	}
+
+	return result
+}

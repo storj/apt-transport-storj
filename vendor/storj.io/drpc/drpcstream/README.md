@@ -14,6 +14,20 @@ Package drpcstream sends protobufs using the dprc wire protocol.
 type Options struct {
 	// SplitSize controls the default size we split packets into frames.
 	SplitSize int
+
+	// ManualFlush controls if the stream will automatically flush after every
+	// message send. Note that flushing is not part of the drpc.Stream
+	// interface, so if you use this you must be ready to type assert and
+	// call RawFlush dynamically.
+	ManualFlush bool
+
+	// MaximumBufferSize causes the Stream to drop any internal buffers that
+	// are larger than this amount to control maximum memory usage at the
+	// expense of more allocations. 0 is unlimited.
+	MaximumBufferSize int
+
+	// Internal contains options that are for internal use only.
+	Internal drpcopts.Stream
 }
 ```
 
@@ -84,33 +98,55 @@ Stream will no longer issue any writes or reads.
 #### func (*Stream) Finished
 
 ```go
-func (s *Stream) Finished() bool
+func (s *Stream) Finished() <-chan struct{}
 ```
-Finished returns true if the stream is fully finished and will no longer issue
-any writes or reads.
+Finished returns a channel that is closed when the stream is fully finished and
+will no longer issue any writes or reads.
 
 #### func (*Stream) HandlePacket
 
 ```go
-func (s *Stream) HandlePacket(pkt drpcwire.Packet) (more bool, err error)
+func (s *Stream) HandlePacket(pkt drpcwire.Packet) (err error)
 ```
 HandlePacket advances the stream state machine by inspecting the packet. It
 returns any major errors that should terminate the transport the stream is
 operating on as well as a boolean indicating if the stream expects more packets.
 
+#### func (*Stream) ID
+
+```go
+func (s *Stream) ID() uint64
+```
+ID returns the stream id.
+
+#### func (*Stream) IsFinished
+
+```go
+func (s *Stream) IsFinished() bool
+```
+IsFinished returns true if the stream is fully finished and will no longer issue
+any writes or reads.
+
+#### func (*Stream) IsTerminated
+
+```go
+func (s *Stream) IsTerminated() bool
+```
+IsTerminated returns true if the stream has been terminated.
+
 #### func (*Stream) MsgRecv
 
 ```go
-func (s *Stream) MsgRecv(msg drpc.Message) (err error)
+func (s *Stream) MsgRecv(msg drpc.Message, enc drpc.Encoding) (err error)
 ```
-MsgRecv recives some protobuf data and unmarshals it into msg.
+MsgRecv recives some message data and unmarshals it with enc into msg.
 
 #### func (*Stream) MsgSend
 
 ```go
-func (s *Stream) MsgSend(msg drpc.Message) (err error)
+func (s *Stream) MsgSend(msg drpc.Message, enc drpc.Encoding) (err error)
 ```
-MsgSend marshals the message with protobuf, writes it, and flushes.
+MsgSend marshals the message with the encoding, writes it, and flushes.
 
 #### func (*Stream) RawFlush
 
@@ -140,6 +176,13 @@ func (s *Stream) SendError(serr error) (err error)
 ```
 SendError terminates the stream and sends the error to the remote. It is a no-op
 if the stream is already terminated.
+
+#### func (*Stream) String
+
+```go
+func (s *Stream) String() string
+```
+String returns a string representation of the stream.
 
 #### func (*Stream) Terminated
 

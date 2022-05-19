@@ -5,22 +5,22 @@ package drpcwire
 
 import "fmt"
 
-//go:generate stringer -type=Kind -trimprefix=Kind_ -output=packet_string.go
+//go:generate stringer -type=Kind -trimprefix=Kind -output=packet_string.go
 
 // Kind is the enumeration of all the different kinds of messages drpc sends.
 type Kind uint8
 
 const (
 	// kindReserved is saved for the future in case we need to extend.
-	kindReserved Kind = 0
+	//   kindReserved Kind = 0
 
 	// kindCancelDeprecated is a reminder that we once used this kind value.
-	kindCancelDeprecated Kind = 4
+	//   kindCancelDeprecated Kind = 4
 
 	// KindInvoke is used to invoke an rpc. The body is the name of the rpc.
 	KindInvoke Kind = 1
 
-	// KindMessage is used to send messages. The body is a protobuf.
+	// KindMessage is used to send messages. The body is an encoded message.
 	KindMessage Kind = 2
 
 	// KindError is used to inform that an error happened. The body is an error
@@ -59,7 +59,7 @@ func (i ID) Less(j ID) bool {
 }
 
 // String returns a human readable form of the ID.
-func (i ID) String() string { return fmt.Sprintf("<%d,%d>", i.Stream, i.Message) }
+func (i ID) String() string { return fmt.Sprintf("<id s:%d m:%d>", i.Stream, i.Message) }
 
 //
 // data frame
@@ -81,6 +81,12 @@ type Frame struct {
 
 	// Control is true if the frame has the control bit set.
 	Control bool
+}
+
+// String returns a human readable form of the packet.
+func (fr Frame) String() string {
+	return fmt.Sprintf("<frm s:%d m:%d data:%d kind:%s done:%v>",
+		fr.ID.Stream, fr.ID.Message, len(fr.Data), fr.Kind, fr.Done)
 }
 
 // ParseFrame attempts to parse a frame at the beginning of buf. If successful
@@ -155,6 +161,6 @@ type Packet struct {
 
 // String returns a human readable form of the packet.
 func (p Packet) String() string {
-	return fmt.Sprintf("<s:%d m:%d kind:%s data:%d>",
-		p.ID.Stream, p.ID.Message, p.Kind, len(p.Data))
+	return fmt.Sprintf("<pkt s:%d m:%d data:%d kind:%s>",
+		p.ID.Stream, p.ID.Message, len(p.Data), p.Kind)
 }

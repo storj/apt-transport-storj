@@ -8,10 +8,10 @@ import (
 	"context"
 	"time"
 
-	"github.com/btcsuite/btcutil/base58"
 	"github.com/spacemonkeygo/monkit/v3"
 	"github.com/zeebo/errs"
 
+	"storj.io/common/base58"
 	"storj.io/common/pb"
 )
 
@@ -23,15 +23,15 @@ type revoker interface {
 
 var (
 	// Error is a general API Key error.
-	Error = errs.Class("api key error")
+	Error = errs.Class("api key")
 	// ErrFormat means that the structural formatting of the API Key is invalid.
-	ErrFormat = errs.Class("api key format error")
+	ErrFormat = errs.Class("api key format")
 	// ErrInvalid means that the API Key is improperly signed.
-	ErrInvalid = errs.Class("api key invalid error")
+	ErrInvalid = errs.Class("api key invalid")
 	// ErrUnauthorized means that the API key does not grant the requested permission.
-	ErrUnauthorized = errs.Class("api key unauthorized error")
+	ErrUnauthorized = errs.Class("api key unauthorized")
 	// ErrRevoked means the API key has been revoked.
-	ErrRevoked = errs.Class("api key revocation error")
+	ErrRevoked = errs.Class("api key revocation")
 
 	mon = monkit.Package()
 )
@@ -45,11 +45,11 @@ const (
 
 	// ActionRead specifies a read operation.
 	ActionRead ActionType = 1
-	// ActionWrite specifies a read operation.
+	// ActionWrite specifies a write operation.
 	ActionWrite ActionType = 2
-	// ActionList specifies a read operation.
+	// ActionList specifies a list operation.
 	ActionList ActionType = 3
-	// ActionDelete specifies a read operation.
+	// ActionDelete specifies a delete operation.
 	ActionDelete ActionType = 4
 	// ActionProjectInfo requests project-level information.
 	ActionProjectInfo ActionType = 5
@@ -102,12 +102,28 @@ func NewAPIKey(secret []byte) (*APIKey, error) {
 	return &APIKey{mac: mac}, nil
 }
 
+// FromParts generates an api key from the provided parts.
+func FromParts(head, secret []byte, caveats ...Caveat) (_ *APIKey, err error) {
+	apiKey := &APIKey{mac: NewUnrestrictedFromParts(head, secret)}
+
+	for _, caveat := range caveats {
+		apiKey, err = apiKey.Restrict(caveat)
+		if err != nil {
+			return nil, Error.Wrap(err)
+		}
+	}
+
+	return apiKey, nil
+}
+
 // Check makes sure that the key authorizes the provided action given the root
 // project secret and any possible revocations, returning an error if the action
 // is not authorized. 'revoked' is a list of revoked heads.
 func (a *APIKey) Check(ctx context.Context, secret []byte, action Action, revoker revoker) (err error) {
 	defer mon.Task()(&ctx)(&err)
-	if !a.mac.Validate(secret) {
+
+	ok, tails := a.mac.ValidateAndTails(secret)
+	if !ok {
 		return ErrInvalid.New("macaroon unauthorized")
 	}
 
@@ -129,7 +145,7 @@ func (a *APIKey) Check(ctx context.Context, secret []byte, action Action, revoke
 	}
 
 	if revoker != nil {
-		revoked, err := revoker.Check(ctx, a.mac.Tails(secret))
+		revoked, err := revoker.Check(ctx, tails)
 		if err != nil {
 			return ErrRevoked.Wrap(err)
 		}

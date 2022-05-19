@@ -6,7 +6,9 @@ package uplink
 import (
 	"context"
 
-	"storj.io/common/storj"
+	"github.com/zeebo/errs"
+
+	"storj.io/uplink/private/metaclient"
 )
 
 // ListBucketsOptions defines bucket listing options.
@@ -17,10 +19,10 @@ type ListBucketsOptions struct {
 
 // ListBuckets returns an iterator over the buckets.
 func (project *Project) ListBuckets(ctx context.Context, options *ListBucketsOptions) *BucketIterator {
-	defer mon.Func().RestartTrace(&ctx)(nil)
+	defer mon.Task()(&ctx)(nil)
 
-	opts := storj.BucketListOptions{
-		Direction: storj.After,
+	opts := metaclient.BucketListOptions{
+		Direction: metaclient.After,
 	}
 
 	if options != nil {
@@ -40,8 +42,8 @@ func (project *Project) ListBuckets(ctx context.Context, options *ListBucketsOpt
 type BucketIterator struct {
 	ctx       context.Context
 	project   *Project
-	options   storj.BucketListOptions
-	list      *storj.BucketList
+	options   metaclient.BucketListOptions
+	list      *metaclient.BucketList
 	position  int
 	completed bool
 	err       error
@@ -77,17 +79,31 @@ func (buckets *BucketIterator) Next() bool {
 }
 
 func (buckets *BucketIterator) loadNext() bool {
-	list, err := buckets.project.db.ListBuckets(buckets.ctx, buckets.options)
+	ok, err := buckets.tryLoadNext()
 	if err != nil {
 		buckets.err = convertKnownErrors(err, "", "")
 		return false
+	}
+	return ok
+}
+
+func (buckets *BucketIterator) tryLoadNext() (ok bool, err error) {
+	db, err := buckets.project.dialMetainfoDB(buckets.ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { err = errs.Combine(err, db.Close()) }()
+
+	list, err := db.ListBuckets(buckets.ctx, buckets.options)
+	if err != nil {
+		return false, err
 	}
 	buckets.list = &list
 	if list.More {
 		buckets.options = buckets.options.NextPage(list)
 	}
 	buckets.position = 0
-	return len(list.Items) > 0
+	return len(list.Items) > 0, nil
 }
 
 // Err returns error, if one happened during iteration.
@@ -107,7 +123,7 @@ func (buckets *BucketIterator) Item() *Bucket {
 	}
 }
 
-func (buckets *BucketIterator) item() *storj.Bucket {
+func (buckets *BucketIterator) item() *metaclient.Bucket {
 	if buckets.completed {
 		return nil
 	}

@@ -11,16 +11,15 @@ import (
 	"github.com/zeebo/errs"
 	"golang.org/x/sync/errgroup"
 
-	"storj.io/common/storj"
-	"storj.io/uplink/private/metainfo"
+	"storj.io/uplink/private/metaclient"
 	"storj.io/uplink/private/storage/streams"
 )
 
 // Upload implements Writer and Closer for writing to stream.
 type Upload struct {
 	ctx      context.Context
-	stream   metainfo.MutableStream
-	streams  streams.Store
+	stream   *metaclient.MutableStream
+	streams  *streams.Store
 	writer   *io.PipeWriter
 	errgroup errgroup.Group
 
@@ -34,19 +33,20 @@ type Upload struct {
 }
 
 // NewUpload creates new stream upload.
-func NewUpload(ctx context.Context, stream metainfo.MutableStream, streams streams.Store) *Upload {
+func NewUpload(ctx context.Context, stream *metaclient.MutableStream, streamsStore *streams.Store) *Upload {
 	reader, writer := io.Pipe()
 
 	upload := Upload{
 		ctx:     ctx,
 		stream:  stream,
-		streams: streams,
+		streams: streamsStore,
 		writer:  writer,
 	}
 
 	upload.errgroup.Go(func() error {
-		m, err := streams.Put(ctx, storj.JoinPaths(stream.BucketName(), stream.Path()), reader, stream, stream.Expires())
+		m, err := streamsStore.Put(ctx, stream.BucketName(), stream.Path(), reader, stream, stream.Expires())
 		if err != nil {
+			err = Error.Wrap(err)
 			return errs.Combine(err, reader.CloseWithError(err))
 		}
 

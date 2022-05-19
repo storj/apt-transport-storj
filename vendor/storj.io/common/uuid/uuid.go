@@ -6,8 +6,10 @@ package uuid
 
 import (
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"io"
+	"sort"
 
 	"github.com/zeebo/errs"
 )
@@ -103,6 +105,52 @@ func FromString(s string) (UUID, error) {
 	return uuid, nil
 }
 
+// Less returns whether uuid is smaller than other in lexicographic order.
+func (uuid UUID) Less(other UUID) bool {
+	a0, b0 := binary.BigEndian.Uint64(uuid[0:]), binary.BigEndian.Uint64(other[0:])
+	if a0 < b0 {
+		return true
+	} else if a0 > b0 {
+		return false
+	}
+
+	a1, b1 := binary.BigEndian.Uint64(uuid[8:]), binary.BigEndian.Uint64(other[8:])
+	if a1 < b1 {
+		return true
+	} else if a1 > b1 {
+		return false
+	}
+
+	return false
+}
+
+// Compare returns an integer comparing uuid and other lexicographically.
+// The result will be 0 if uuid==other, -1 if uuid < other, and +1 if uuid > other.
+func (uuid UUID) Compare(other UUID) int {
+	a0, b0 := binary.BigEndian.Uint64(uuid[0:]), binary.BigEndian.Uint64(other[0:])
+	if a0 < b0 {
+		return -1
+	} else if a0 > b0 {
+		return 1
+	}
+
+	a1, b1 := binary.BigEndian.Uint64(uuid[8:]), binary.BigEndian.Uint64(other[8:])
+	if a1 < b1 {
+		return -1
+	} else if a1 > b1 {
+		return 1
+	}
+
+	return 0
+}
+
+// SortAscending orders a slice of UUIDs from low to high.
+func SortAscending(uuids []UUID) {
+	sort.Slice(uuids, func(i, j int) bool {
+		return uuids[i].Less(uuids[j])
+	})
+}
+
 // MarshalText marshals UUID in `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` form.
 func (uuid UUID) MarshalText() ([]byte, error) {
 	return []byte(uuid.String()), nil
@@ -138,4 +186,30 @@ func (uuid *UUID) UnmarshalJSON(b []byte) error {
 	}
 	*uuid = x
 	return nil
+}
+
+// Marshal serializes uuid.
+func (uuid UUID) Marshal() ([]byte, error) {
+	return uuid.Bytes(), nil
+}
+
+// MarshalTo serializes uuid into the passed byte slice.
+func (uuid *UUID) MarshalTo(data []byte) (n int, err error) {
+	n = copy(data, uuid[:])
+	return n, nil
+}
+
+// Unmarshal deserializes uuid.
+func (uuid *UUID) Unmarshal(data []byte) error {
+	var err error
+	*uuid, err = FromBytes(data)
+	return err
+}
+
+// Bytes returns raw bytes of the uuid.
+func (uuid UUID) Bytes() []byte { return uuid[:] }
+
+// Size returns the length of uuid (implements gogo's custom type interface).
+func (uuid UUID) Size() int {
+	return len(uuid)
 }

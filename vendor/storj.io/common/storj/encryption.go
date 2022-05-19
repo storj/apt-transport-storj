@@ -4,7 +4,7 @@
 package storj
 
 import (
-	"encoding/base32"
+	"database/sql/driver"
 
 	"github.com/zeebo/errs"
 )
@@ -80,17 +80,14 @@ func (key *Key) IsZero() bool {
 }
 
 // ErrNonce is used when something goes wrong with a stream ID.
-var ErrNonce = errs.Class("nonce error")
-
-// nonceEncoding is base32 without padding.
-var nonceEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
+var ErrNonce = errs.Class("nonce")
 
 // Nonce represents the largest nonce used by any encryption protocol.
 type Nonce [NonceSize]byte
 
 // NonceFromString decodes an base32 encoded.
 func NonceFromString(s string) (Nonce, error) {
-	nonceBytes, err := nonceEncoding.DecodeString(s)
+	nonceBytes, err := base32Encoding.DecodeString(s)
 	if err != nil {
 		return Nonce{}, ErrNonce.Wrap(err)
 	}
@@ -114,7 +111,7 @@ func (nonce Nonce) IsZero() bool {
 }
 
 // String representation of the nonce.
-func (nonce Nonce) String() string { return nonceEncoding.EncodeToString(nonce.Bytes()) }
+func (nonce Nonce) String() string { return base32Encoding.EncodeToString(nonce.Bytes()) }
 
 // Bytes returns bytes of the nonce.
 func (nonce Nonce) Bytes() []byte { return nonce[:] }
@@ -147,17 +144,56 @@ func (nonce Nonce) Size() int {
 	return len(nonce)
 }
 
-// MarshalJSON serializes a nonce to a json string as bytes.
-func (nonce Nonce) MarshalJSON() ([]byte, error) {
-	return []byte(`"` + nonce.String() + `"`), nil
+// MarshalText serializes a nonce to a base32 string.
+func (nonce Nonce) MarshalText() ([]byte, error) {
+	return []byte(nonce.String()), nil
 }
 
-// UnmarshalJSON deserializes a json string (as bytes) to a nonce.
-func (nonce *Nonce) UnmarshalJSON(data []byte) error {
+// UnmarshalText deserializes a base32 string to a nonce.
+func (nonce *Nonce) UnmarshalText(data []byte) error {
 	var err error
 	*nonce, err = NonceFromString(string(data))
 	return err
 }
 
+// Value converts a Nonce to a database field.
+func (nonce Nonce) Value() (driver.Value, error) {
+	if nonce.IsZero() {
+		return nil, nil
+	}
+	return nonce.Bytes(), nil
+}
+
+// Scan extracts a Nonce from a database field.
+func (nonce *Nonce) Scan(src interface{}) (err error) {
+	if src == nil {
+		*nonce = Nonce{}
+		return
+	}
+
+	b, ok := src.([]byte)
+	if !ok {
+		return ErrNodeID.New("Nonce Scan expects []byte")
+	}
+	n, err := NonceFromBytes(b)
+	*nonce = n
+	return err
+}
+
 // EncryptedPrivateKey is a private key that has been encrypted.
 type EncryptedPrivateKey []byte
+
+// Value converts a EncryptedPrivateKey to a database field.
+func (pkey EncryptedPrivateKey) Value() (driver.Value, error) {
+	return append([]byte{}, pkey...), nil
+}
+
+// Scan extracts a EncryptedPrivateKey from a database field.
+func (pkey *EncryptedPrivateKey) Scan(src interface{}) (err error) {
+	b, ok := src.([]byte)
+	if !ok {
+		return ErrNodeID.New("EncryptedPrivateKey Scan expects []byte")
+	}
+	*pkey = append([]byte{}, b...)
+	return nil
+}

@@ -45,10 +45,13 @@ message OrderLimit {
     google.protobuf.Timestamp order_expiration = 9 [(gogoproto.stdtime) = true, (gogoproto.nullable) = false];
     google.protobuf.Timestamp order_creation = 12 [(gogoproto.stdtime) = true, (gogoproto.nullable) = false];
 
+    bytes encrypted_metadata_key_id = 14;
+    bytes encrypted_metadata = 15; // This refers to satellite/internalpb.OrderLimitMetadata
+
     bytes satellite_signature = 10;
 
     // this allows a storage node to find a satellite and handshake with it to get its key.
-    node.NodeAddress satellite_address = 11;
+    node.NodeAddress deprecated_satellite_address = 11;
 }
 
 // OrderLimitSigning provides OrderLimit signing serialization.
@@ -79,10 +82,13 @@ message OrderLimitSigning {
     google.protobuf.Timestamp order_expiration = 9 [(gogoproto.stdtime) = true];
     google.protobuf.Timestamp order_creation = 12 [(gogoproto.stdtime) = true];
 
+    bytes encrypted_metadata_key_id = 14;
+    bytes encrypted_metadata = 15;
+
     bytes satellite_signature = 10;
 
     // this allows a storage node to find a satellite and handshake with it to get its key.
-    node.NodeAddress satellite_address = 11;
+    node.NodeAddress deprecated_satellite_address = 11;
 }
 
 // Order is a one step of fullfilling Amount number of bytes from an OrderLimit with SerialNumber.
@@ -143,7 +149,6 @@ message PieceHashSigning {
 }
 
 service Orders {
-    rpc Settlement(stream SettlementRequest) returns (stream SettlementResponse) {}
     rpc SettlementWithWindow(stream SettlementRequest) returns (SettlementWithWindowResponse) {}
 }
 
@@ -155,17 +160,6 @@ service Orders {
 message SettlementRequest {
     OrderLimit limit = 1;
     Order      order = 2;
-}
-
-message SettlementResponse {
-    enum Status {
-        INVALID  = 0;
-        ACCEPTED = 1;
-        REJECTED = 2;
-    }
-
-    bytes  serial_number = 1 [(gogoproto.customtype) = "SerialNumber", (gogoproto.nullable) = false];
-    Status status = 2;
 }
 
 // SettlementWithWindowResponse returns the status and the amounts

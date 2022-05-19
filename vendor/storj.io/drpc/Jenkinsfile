@@ -1,27 +1,51 @@
 pipeline {
     agent {
-        dockerfile {
-            filename 'Dockerfile.jenkins'
-            args '-u root:root --cap-add SYS_PTRACE -v "/tmp/gomod":/go/pkg/mod'
+        docker {
             label 'main'
+            image 'storjlabs/ci:latest'
+            alwaysPull true
+            args '-u root:root --cap-add SYS_PTRACE -v "/tmp/gomod":/go/pkg/mod'
         }
     }
+
+    options {
+          timeout(time: 26, unit: 'MINUTES')
+    }
+
+    environment {
+        GOTRACEBACK = 'all'
+    }
+
     stages {
-        stage('Download') {
+        stage('Checkout') {
             steps {
                 checkout scm
-                sh 'make download'
             }
         }
+
         stage('Test') {
             steps {
                 sh 'make test'
             }
         }
+
         stage('Lint') {
             steps {
                 sh 'make lint'
             }
+        }
+
+        stage('Vet') {
+            steps {
+                sh 'make vet'
+            }
+        }
+    }
+
+    post {
+        always {
+            sh "chmod -R 777 ." // ensure Jenkins agent can delete the working directory
+            deleteDir()
         }
     }
 }

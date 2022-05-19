@@ -4,12 +4,11 @@ Go library for Storj V3 Network.
 
 [![Go Report Card](https://goreportcard.com/badge/storj.io/uplink)](https://goreportcard.com/report/storj.io/uplink)
 [![Go Doc](https://img.shields.io/badge/godoc-reference-blue.svg?style=flat-square)](https://pkg.go.dev/storj.io/uplink)
-![Beta](https://img.shields.io/badge/version-beta-green.svg)
 
-<img src="https://github.com/storj/storj/raw/master/resources/logo.png" width="100">
+<img src="https://github.com/storj/storj/raw/main/resources/logo.png" width="100">
 
 Storj is building a decentralized cloud storage network.
-[Check out our white paper for more info!](https://storj.io/white-paper)
+[Check out our white paper for more info!](https://storj.io/whitepaper)
 
 ----
 
@@ -19,13 +18,26 @@ encrypted, broken into little pieces and stored in a global decentralized
 network of computers. Luckily, we also support allowing you (and only you) to
 retrieve those files!
 
+[![Introducing Storj DCS—Decentralized Cloud Storage for Developers](https://img.youtube.com/vi/JgKdBRIyIps/hqdefault.jpg)](https://www.youtube.com/watch?v=JgKdBRIyIps)
+
+### Installation
+
+```
+go get storj.io/uplink
+```
+
+### Example
+
+Ready to use example can be found here: [examples/walkthrough/main.go](examples/walkthrough/main.go)
+
+Provided example requires Access Grant as an input parameter. Access Grant can be obtained from Satellite UI. [See our documentation](https://docs.storj.io/dcs/getting-started/quickstart-uplink-cli/uploading-your-first-object/create-first-access-grant).
+
 ### A Note about Versioning
 
 Our versioning in this repo is intended to primarily support the expectations of the
 [Go modules](https://blog.golang.org/using-go-modules) system, so you can expect that
 within a major version release, backwards-incompatible changes will be avoided at high
-cost. This is not the case with our downstream repo,
-[storj/storj](https://github.com/storj/storj/).
+cost.
 
 # Documentation
 
@@ -43,4 +55,4 @@ This library is distributed under the
 
 # Support
 
-If you have any questions or suggestions please reach out to us on [our community forum](https://forum.storj.io/) or file a support ticket at https://support.tardigrade.io.
+If you have any questions or suggestions please reach out to us on [our community forum](https://forum.storj.io/) or file a support ticket at https://support.storj.io.

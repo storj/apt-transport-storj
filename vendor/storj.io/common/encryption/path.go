@@ -23,7 +23,32 @@ var (
 	escapeSlash = byte('\x2e')
 	escapeFF    = byte('\xfe')
 	escape01    = byte('\x01')
+
+	// ErrMissingEncryptionBase is caused by trying to encrypt a path without
+	// having the appropriate root in the encryption store.
+	ErrMissingEncryptionBase = errs.Class("missing encryption base")
+
+	// ErrMissingDecryptionBase is caused by trying to decrypt a path without
+	// having the appropriate root in the encryption store.
+	ErrMissingDecryptionBase = errs.Class("missing decryption base")
 )
+
+type pathBuilder struct {
+	i int
+	b strings.Builder
+}
+
+func (p *pathBuilder) append(x string) {
+	if p.i > 0 {
+		_ = p.b.WriteByte('/')
+	}
+	_, _ = p.b.WriteString(x)
+	p.i++
+}
+
+func (p *pathBuilder) String() string                 { return p.b.String() }
+func (p *pathBuilder) Encrypted() paths.Encrypted     { return paths.NewEncrypted(p.String()) }
+func (p *pathBuilder) Unencrypted() paths.Unencrypted { return paths.NewUnencrypted(p.String()) }
 
 // EncryptPathWithStoreCipher encrypts the path looking up keys and the cipher from the
 // provided store and bucket.
@@ -70,24 +95,13 @@ func encryptPath(bucket string, path paths.Unencrypted, pathCipher *storj.Cipher
 		return paths.Encrypted{}, nil
 	}
 
-	_, consumed, base := store.LookupUnencrypted(bucket, path)
+	_, remaining, base := store.LookupUnencrypted(bucket, path)
 	if base == nil {
-		return paths.Encrypted{}, errs.New("unable to find encryption base for: %s/%q", bucket, path)
+		return paths.Encrypted{}, ErrMissingEncryptionBase.New("%q/%q", bucket, path)
 	}
 
 	if pathCipher == nil {
 		pathCipher = &base.PathCipher
-	}
-	if store.EncryptionBypass {
-		*pathCipher = storj.EncNullBase64URL
-	}
-	if *pathCipher == storj.EncNull {
-		return paths.NewEncrypted(path.Raw()), nil
-	}
-
-	remaining, ok := path.Consume(consumed)
-	if !ok {
-		return paths.Encrypted{}, errs.New("unable to encrypt bucket path: %s/%q", bucket, path)
 	}
 
 	// if we're using the default base (meaning the default key), we need
@@ -100,33 +114,27 @@ func encryptPath(bucket string, path paths.Unencrypted, pathCipher *storj.Cipher
 		}
 	}
 
-	encrypted, err := EncryptPathRaw(remaining.Raw(), *pathCipher, key)
+	encrypted, err := EncryptIterator(remaining, *pathCipher, key)
 	if err != nil {
 		return paths.Encrypted{}, errs.Wrap(err)
 	}
 
-	var builder strings.Builder
-	_, _ = builder.WriteString(base.Encrypted.Raw())
-
-	if len(encrypted) > 0 {
-		if builder.Len() > 0 {
-			_ = builder.WriteByte('/')
-		}
-		_, _ = builder.WriteString(encrypted)
+	var pb pathBuilder
+	if base.Encrypted.Valid() {
+		pb.append(base.Encrypted.Raw())
+	}
+	if !remaining.Done() {
+		pb.append(encrypted)
 	}
 
-	return paths.NewEncrypted(builder.String()), nil
+	return pb.Encrypted(), nil
 }
 
-// EncryptPathRaw encrypts the path using the provided key directly. EncryptPath should be
-// preferred if possible.
-func EncryptPathRaw(raw string, cipher storj.CipherSuite, key *storj.Key) (string, error) {
-	if cipher == storj.EncNull {
-		return raw, nil
-	}
-
-	var builder strings.Builder
-	for iter, i := paths.NewIterator(raw), 0; !iter.Done(); i++ {
+// EncryptIterator encrypts the iterator using the provided key directly, returning the
+// joined path. EncryptPath should be preferred if possible.
+func EncryptIterator(iter paths.Iterator, cipher storj.CipherSuite, key *storj.Key) (string, error) {
+	var pb pathBuilder
+	for !iter.Done() {
 		component := iter.Next()
 		encComponent, err := encryptPathComponent(component, cipher, key)
 		if err != nil {
@@ -136,13 +144,15 @@ func EncryptPathRaw(raw string, cipher storj.CipherSuite, key *storj.Key) (strin
 		if err != nil {
 			return "", errs.Wrap(err)
 		}
-		if i > 0 {
-			_ = builder.WriteByte('/')
-		}
-
-		_, _ = builder.WriteString(encComponent)
+		pb.append(encComponent)
 	}
-	return builder.String(), nil
+	return pb.String(), nil
+}
+
+// EncryptPathRaw encrypts the path using the provided key directly. EncryptPath should be
+// preferred if possible.
+func EncryptPathRaw(raw string, cipher storj.CipherSuite, key *storj.Key) (string, error) {
+	return EncryptIterator(paths.NewIterator(raw), cipher, key)
 }
 
 // DecryptPathWithStoreCipher decrypts the path looking up keys and the cipher from the
@@ -169,24 +179,13 @@ func decryptPath(bucket string, path paths.Encrypted, pathCipher *storj.CipherSu
 		return paths.Unencrypted{}, nil
 	}
 
-	_, consumed, base := store.LookupEncrypted(bucket, path)
+	_, remaining, base := store.LookupEncrypted(bucket, path)
 	if base == nil {
-		return paths.Unencrypted{}, errs.New("unable to find decryption base for: %q", path)
+		return paths.Unencrypted{}, ErrMissingDecryptionBase.New("%q/%q", bucket, path)
 	}
 
 	if pathCipher == nil {
 		pathCipher = &base.PathCipher
-	}
-	if store.EncryptionBypass {
-		*pathCipher = storj.EncNullBase64URL
-	}
-	if *pathCipher == storj.EncNull {
-		return paths.NewUnencrypted(path.Raw()), nil
-	}
-
-	remaining, ok := path.Consume(consumed)
-	if !ok {
-		return paths.Unencrypted{}, errs.New("unable to decrypt bucket path: %q", path)
 	}
 
 	// if we're using the default base (meaning the default key), we need
@@ -199,34 +198,27 @@ func decryptPath(bucket string, path paths.Encrypted, pathCipher *storj.CipherSu
 		}
 	}
 
-	decrypted, err := DecryptPathRaw(remaining.Raw(), *pathCipher, key)
+	decrypted, err := DecryptIterator(remaining, *pathCipher, key)
 	if err != nil {
 		return paths.Unencrypted{}, errs.Wrap(err)
 	}
 
-	var builder strings.Builder
-	_, _ = builder.WriteString(base.Unencrypted.Raw())
-
-	if len(decrypted) > 0 {
-		if builder.Len() > 0 {
-			_ = builder.WriteByte('/')
-		}
-
-		_, _ = builder.WriteString(decrypted)
+	var pb pathBuilder
+	if base.Unencrypted.Valid() {
+		pb.append(base.Unencrypted.Raw())
+	}
+	if !remaining.Done() {
+		pb.append(decrypted)
 	}
 
-	return paths.NewUnencrypted(builder.String()), nil
+	return pb.Unencrypted(), nil
 }
 
-// DecryptPathRaw decrypts the path using the provided key directly. DecryptPath should be
-// preferred if possible.
-func DecryptPathRaw(raw string, cipher storj.CipherSuite, key *storj.Key) (string, error) {
-	if cipher == storj.EncNull {
-		return raw, nil
-	}
-
-	var builder strings.Builder
-	for iter, i := paths.NewIterator(raw), 0; !iter.Done(); i++ {
+// DecryptIterator decrypts the iterator using the provided key directly, returning the
+// joined path. DecryptPath should be preferred if possible.
+func DecryptIterator(iter paths.Iterator, cipher storj.CipherSuite, key *storj.Key) (string, error) {
+	var pb pathBuilder
+	for !iter.Done() {
 		component := iter.Next()
 		unencComponent, err := decryptPathComponent(component, cipher, key)
 		if err != nil {
@@ -236,13 +228,15 @@ func DecryptPathRaw(raw string, cipher storj.CipherSuite, key *storj.Key) (strin
 		if err != nil {
 			return "", errs.Wrap(err)
 		}
-		if i > 0 {
-			_ = builder.WriteByte('/')
-		}
-
-		_, _ = builder.WriteString(unencComponent)
+		pb.append(unencComponent)
 	}
-	return builder.String(), nil
+	return pb.String(), nil
+}
+
+// DecryptPathRaw decrypts the path using the provided key directly. DecryptPath should be
+// preferred if possible.
+func DecryptPathRaw(raw string, cipher storj.CipherSuite, key *storj.Key) (string, error) {
+	return DecryptIterator(paths.NewIterator(raw), cipher, key)
 }
 
 // DeriveContentKey returns the content key for the passed in path by looking up
@@ -259,9 +253,9 @@ func DeriveContentKey(bucket string, path paths.Unencrypted, store *Store) (key 
 // DerivePathKey returns the path key for the passed in path by looking up the
 // appropriate base key from the store and bucket and deriving the rest.
 func DerivePathKey(bucket string, path paths.Unencrypted, store *Store) (key *storj.Key, err error) {
-	_, consumed, base := store.LookupUnencrypted(bucket, path)
+	_, remaining, base := store.LookupUnencrypted(bucket, path)
 	if base == nil {
-		return nil, errs.New("unable to find encryption base for: %s/%q", bucket, path)
+		return nil, ErrMissingEncryptionBase.New("%q/%q", bucket, path)
 	}
 
 	// If asking for the key at the bucket, do that and return.
@@ -278,11 +272,6 @@ func DerivePathKey(bucket string, path paths.Unencrypted, store *Store) (key *st
 		return key, nil
 	}
 
-	remaining, ok := path.Consume(consumed)
-	if !ok {
-		return nil, errs.New("unable to derive path key for: %s/%q", bucket, path)
-	}
-
 	// if we're using the default base (meaning the default key), we need
 	// to include the bucket name in the path derivation.
 	key = &base.Key
@@ -293,8 +282,8 @@ func DerivePathKey(bucket string, path paths.Unencrypted, store *Store) (key *st
 		}
 	}
 
-	for iter := remaining.Iterator(); !iter.Done(); {
-		key, err = derivePathKeyComponent(key, iter.Next())
+	for !remaining.Done() {
+		key, err = derivePathKeyComponent(key, remaining.Next())
 		if err != nil {
 			return nil, errs.Wrap(err)
 		}
@@ -311,6 +300,9 @@ func derivePathKeyComponent(key *storj.Key, component string) (*storj.Key, error
 
 // encryptPathComponent encrypts a single path component with the provided cipher and key.
 func encryptPathComponent(comp string, cipher storj.CipherSuite, key *storj.Key) (string, error) {
+	if cipher == storj.EncNull {
+		return comp, nil
+	}
 
 	if cipher == storj.EncNullBase64URL {
 		decoded, err := base64.URLEncoding.DecodeString(comp)
@@ -356,6 +348,10 @@ func encryptPathComponent(comp string, cipher storj.CipherSuite, key *storj.Key)
 func decryptPathComponent(comp string, cipher storj.CipherSuite, key *storj.Key) (string, error) {
 	if comp == "" {
 		return "", nil
+	}
+
+	if cipher == storj.EncNull {
+		return comp, nil
 	}
 
 	if cipher == storj.EncNullBase64URL {

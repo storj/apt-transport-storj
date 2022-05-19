@@ -36,12 +36,13 @@ ReadVarint reads a varint encoded integer from the front of buf, returning the
 remaining bytes, the value, and if there was a success. if ok is false, the
 returned buffer is the same as the passed in buffer.
 
-#### func  SplitFrame
+#### func  SplitData
 
 ```go
-func SplitFrame(data []byte, atEOF bool) (int, []byte, error)
+func SplitData(buf []byte, n int) (prefix, suffix []byte)
 ```
-SplitFrame is used by bufio.Scanner to split frames out of a stream of bytes.
+SplitData is used to split a buffer if it is larger than n bytes. If n is zero,
+a reasonable default is used. If n is less than zero then it does not split.
 
 #### func  SplitN
 
@@ -50,7 +51,7 @@ func SplitN(pkt Packet, n int, cb func(fr Frame) error) error
 ```
 SplitN splits the marshaled form of the Packet into a number of frames such that
 each frame is at most n bytes. It calls the callback with every such frame. If n
-is zero, a default of 1024 is used.
+is zero, a reasonable default is used.
 
 #### func  UnmarshalError
 
@@ -92,6 +93,13 @@ rem contains the unparsed data, fr contains the parsed frame, ok will be true,
 and err will be nil. If there is not enough data for a frame, ok will be false
 and err will be nil. If the data in the buf is malformed, then an error is
 returned.
+
+#### func (Frame) String
+
+```go
+func (fr Frame) String() string
+```
+String returns a human readable form of the packet.
 
 #### type ID
 
@@ -137,7 +145,7 @@ const (
 	// KindInvoke is used to invoke an rpc. The body is the name of the rpc.
 	KindInvoke Kind = 1
 
-	// KindMessage is used to send messages. The body is a protobuf.
+	// KindMessage is used to send messages. The body is an encoded message.
 	KindMessage Kind = 2
 
 	// KindError is used to inform that an error happened. The body is an error
@@ -205,12 +213,22 @@ NewReader constructs a Reader to read Packets from the io.Reader.
 #### func (*Reader) ReadPacket
 
 ```go
-func (s *Reader) ReadPacket() (pkt Packet, err error)
+func (r *Reader) ReadPacket() (pkt Packet, err error)
 ```
-ReadPacket reads a packet from the io.Reader. IDs read from frames must be
+ReadPacket reads a packet from the io.Reader. It is equivalent to calling
+ReadPacketUsing(nil).
+
+#### func (*Reader) ReadPacketUsing
+
+```go
+func (r *Reader) ReadPacketUsing(buf []byte) (pkt Packet, err error)
+```
+ReadPacketUsing reads a packet from the io.Reader. IDs read from frames must be
 monotonically increasing. When a new ID is read, the old data is discarded. This
 allows for easier asynchronous interrupts. If the amount of data in the Packet
-becomes too large, an error is returned.
+becomes too large, an error is returned. The returned packet's Data field is
+constructed by appending to the provided buf after it has been resliced to be
+zero length.
 
 #### type Writer
 
@@ -229,6 +247,13 @@ func NewWriter(w io.Writer, size int) *Writer
 NewWriter returns a Writer that will attempt to buffer size data before sending
 it to the io.Writer.
 
+#### func (*Writer) Empty
+
+```go
+func (b *Writer) Empty() bool
+```
+Empty returns true if there are no bytes buffered in the writer.
+
 #### func (*Writer) Flush
 
 ```go
@@ -236,6 +261,13 @@ func (b *Writer) Flush() (err error)
 ```
 Flush forces a flush of any buffered data to the io.Writer. It is a no-op if
 there is no data in the buffer.
+
+#### func (*Writer) Reset
+
+```go
+func (b *Writer) Reset() *Writer
+```
+Reset clears any pending data in the buffer.
 
 #### func (*Writer) WriteFrame
 

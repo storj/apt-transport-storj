@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	// RevocationBucket is the bolt bucket to store revocation data in
+	// RevocationBucket is the bolt bucket to store revocation data in.
 	RevocationBucket = "revocations"
 )
 
@@ -30,10 +30,10 @@ var (
 		&SignedCertExtID, caWhitelistSignedLeafHandler,
 	)
 
-	// NB: 2.999.X is reserved for "example" OIDs
-	// (see http://oid-info.com/get/2.999)
-	// 2.999.1.X -- storj general/misc. extensions
-	// 2.999.2.X -- storj identity extensions
+	// NB: 2.999.X is reserved for "example" OIDs.
+	//   (see http://oid-info.com/get/2.999)
+	//   2.999.1.X -- storj general/misc. extensions
+	//   2.999.2.X -- storj identity extensions
 
 	// SignedCertExtID is the asn1 object ID for a pkix extension holding a
 	// signature of the cert it's extending, signed by some CA (e.g. the root cert chain).
@@ -51,12 +51,12 @@ var (
 	IdentityPOWCounterExtID = ExtensionID{2, 999, 2, 2}
 
 	// Error is used when an error occurs while processing an extension.
-	Error = errs.Class("extension error")
+	Error = errs.Class("extension")
 
 	// ErrVerifyCASignedLeaf is used when a signed leaf extension signature wasn't produced
 	// by any CA in the whitelist.
 	ErrVerifyCASignedLeaf = Error.New("leaf not signed by any CA in the whitelist")
-	// ErrUniqueExtensions is used when multiple extensions have the same Id
+	// ErrUniqueExtensions is used when multiple extensions have the same Id.
 	ErrUniqueExtensions = Error.New("extensions are not unique")
 )
 
@@ -157,6 +157,7 @@ func (handlerFactory *HandlerFactory) NewHandlerFunc(opts *Options) HandlerFunc 
 	return handlerFactory.factory(opts)
 }
 
+// uniqueExts checks whether exts only contains unique id-s.
 func uniqueExts(exts []pkix.Extension) bool {
 	seen := make(map[string]struct{}, len(exts))
 	for _, e := range exts {
@@ -169,6 +170,8 @@ func uniqueExts(exts []pkix.Extension) bool {
 	return true
 }
 
+// caWhitelistSignedLeafHandler checks whether the chain contains
+// extension signed by one of the peer ca whitelist.
 func caWhitelistSignedLeafHandler(opts *Options) HandlerFunc {
 	return func(ext pkix.Extension, chains [][]*x509.Certificate) error {
 		if opts.PeerCAWhitelist == nil {

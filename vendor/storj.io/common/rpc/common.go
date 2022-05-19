@@ -4,6 +4,7 @@
 package rpc
 
 import (
+	"crypto/tls"
 	"net"
 	"time"
 
@@ -13,8 +14,6 @@ import (
 	"storj.io/common/memory"
 )
 
-//go:generate go run gen.go ../pb drpc alias.go
-
 const (
 	// IsDRPC is true if drpc is being used.
 	IsDRPC = true
@@ -23,7 +22,11 @@ const (
 var mon = monkit.Package()
 
 // Error wraps all of the errors returned by this package.
-var Error = errs.Class("rpccompat")
+var Error = errs.Class("rpc")
+
+//
+// timed conns
+//
 
 // timedConn wraps a net.Conn so that all reads and writes get the specified timeout and
 // return bytes no faster than the rate. If the timeout or rate are zero, they are
@@ -67,3 +70,18 @@ func (t *timedConn) Write(p []byte) (int, error) {
 	t.delay(start, n)
 	return n, err
 }
+
+//
+// tls conn wrapper
+//
+
+// tlsConnWrapper is a wrapper around a *tls.Conn that calls Close on the
+// underlying connection when closed rather than trying to send a
+// notification to the other side which may block forever.
+type tlsConnWrapper struct {
+	*tls.Conn
+	underlying net.Conn
+}
+
+// Close closes the underlying connection.
+func (t *tlsConnWrapper) Close() error { return t.underlying.Close() }

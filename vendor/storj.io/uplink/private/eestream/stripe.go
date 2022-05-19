@@ -14,7 +14,6 @@ import (
 
 	"github.com/spacemonkeygo/monkit/v3"
 	"github.com/vivint/infectious"
-	"go.uber.org/zap"
 )
 
 var (
@@ -35,7 +34,7 @@ type StripeReader struct {
 
 // NewStripeReader creates a new StripeReader from the given readers, erasure
 // scheme and max buffer memory.
-func NewStripeReader(log *zap.Logger, rs map[int]io.ReadCloser, es ErasureScheme, mbm int, forceErrorDetection bool) *StripeReader {
+func NewStripeReader(rs map[int]io.ReadCloser, es ErasureScheme, mbm int, forceErrorDetection bool) *StripeReader {
 	readerCount := len(rs)
 
 	r := &StripeReader{
@@ -57,7 +56,7 @@ func NewStripeReader(log *zap.Logger, rs map[int]io.ReadCloser, es ErasureScheme
 
 	for i := range rs {
 		r.inbufs[i] = make([]byte, es.ErasureShareSize())
-		r.bufs[i] = NewPieceBuffer(log, make([]byte, bufSize), es.ErasureShareSize(), r.cond)
+		r.bufs[i] = NewPieceBuffer(make([]byte, bufSize), es.ErasureShareSize(), r.cond)
 		// Kick off a goroutine each reader to be copied into a PieceBuffer.
 		go func(r io.Reader, buf *PieceBuffer) {
 			_, err := io.Copy(buf, r)
@@ -120,7 +119,7 @@ func (r *StripeReader) ReadStripe(ctx context.Context, num int64, p []byte) (_ [
 		}
 	}
 	// could not read enough shares to attempt a decode
-	backcompatMon.Meter("download_stripe_failed_not_enough_pieces_uplink").Mark(1) //locked
+	backcompatMon.Meter("download_stripe_failed_not_enough_pieces_uplink").Mark(1) //mon:locked
 	return nil, r.combineErrs(num)
 }
 
@@ -132,7 +131,13 @@ func (r *StripeReader) readAvailableShares(ctx context.Context, num int64) (n in
 		if r.inmap[i] != nil || r.errmap[i] != nil {
 			continue
 		}
-		if buf.HasShare(num) {
+
+		hasShare, err := buf.HasShare(num)
+		if err != nil {
+			r.errmap[i] = err
+			continue
+		}
+		if hasShare {
 			err := buf.ReadShare(num, r.inbufs[i])
 			if err != nil {
 				r.errmap[i] = err
@@ -154,8 +159,9 @@ func (r *StripeReader) pendingReaders() bool {
 // hasEnoughShares check if there are enough erasure shares read to attempt
 // a decode.
 func (r *StripeReader) hasEnoughShares() bool {
-	return len(r.inmap) >= r.scheme.RequiredCount()+1 ||
-		(!r.forceErrorDetection && len(r.inmap) == r.scheme.RequiredCount() && !r.pendingReaders())
+	hasRequired := len(r.inmap) >= r.scheme.RequiredCount()+1
+	hasMinimum := !r.forceErrorDetection && len(r.inmap) == r.scheme.RequiredCount() && !r.pendingReaders()
+	return hasRequired || hasMinimum
 }
 
 // shouldWaitForMore checks the returned decode error if it makes sense to wait

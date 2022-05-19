@@ -4,13 +4,10 @@
 package pb
 
 import (
-	context "context"
 	fmt "fmt"
 	math "math"
 
 	proto "github.com/gogo/protobuf/proto"
-
-	drpc "storj.io/drpc"
 )
 
 // Reference imports to suppress errors if they are not otherwise used.
@@ -22,7 +19,7 @@ var _ = math.Inf
 // is compatible with the proto package it is being compiled against.
 // A compilation error at this line likely means your copy of the
 // proto package needs to be updated.
-const _ = proto.GoGoProtoPackageIsVersion2 // please upgrade the proto package
+const _ = proto.GoGoProtoPackageIsVersion3 // please upgrade the proto package
 
 type SigningRequest struct {
 	AuthToken            string   `protobuf:"bytes,1,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"`
@@ -131,76 +128,3 @@ var fileDescriptor_c0d34c34dd33be4b = []byte{
 	0x17, 0xc6, 0xf1, 0xec, 0x67, 0x5f, 0xff, 0x1d, 0x00, 0x00, 0xff, 0xff, 0x7b, 0xe3, 0xe4, 0xf2,
 	0xf4, 0x00, 0x00, 0x00,
 }
-
-// --- DRPC BEGIN ---
-
-type DRPCCertificatesClient interface {
-	DRPCConn() drpc.Conn
-
-	Sign(ctx context.Context, in *SigningRequest) (*SigningResponse, error)
-}
-
-type drpcCertificatesClient struct {
-	cc drpc.Conn
-}
-
-func NewDRPCCertificatesClient(cc drpc.Conn) DRPCCertificatesClient {
-	return &drpcCertificatesClient{cc}
-}
-
-func (c *drpcCertificatesClient) DRPCConn() drpc.Conn { return c.cc }
-
-func (c *drpcCertificatesClient) Sign(ctx context.Context, in *SigningRequest) (*SigningResponse, error) {
-	out := new(SigningResponse)
-	err := c.cc.Invoke(ctx, "/node.Certificates/Sign", in, out)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-type DRPCCertificatesServer interface {
-	Sign(context.Context, *SigningRequest) (*SigningResponse, error)
-}
-
-type DRPCCertificatesDescription struct{}
-
-func (DRPCCertificatesDescription) NumMethods() int { return 1 }
-
-func (DRPCCertificatesDescription) Method(n int) (string, drpc.Receiver, interface{}, bool) {
-	switch n {
-	case 0:
-		return "/node.Certificates/Sign",
-			func(srv interface{}, ctx context.Context, in1, in2 interface{}) (drpc.Message, error) {
-				return srv.(DRPCCertificatesServer).
-					Sign(
-						ctx,
-						in1.(*SigningRequest),
-					)
-			}, DRPCCertificatesServer.Sign, true
-	default:
-		return "", nil, nil, false
-	}
-}
-
-func DRPCRegisterCertificates(mux drpc.Mux, impl DRPCCertificatesServer) error {
-	return mux.Register(impl, DRPCCertificatesDescription{})
-}
-
-type DRPCCertificates_SignStream interface {
-	drpc.Stream
-	SendAndClose(*SigningResponse) error
-}
-
-type drpcCertificatesSignStream struct {
-	drpc.Stream
-}
-
-func (x *drpcCertificatesSignStream) SendAndClose(m *SigningResponse) error {
-	if err := x.MsgSend(m); err != nil {
-		return err
-	}
-	return x.CloseSend()
-}
-
-// --- DRPC END ---

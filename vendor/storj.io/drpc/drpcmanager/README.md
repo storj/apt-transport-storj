@@ -43,9 +43,9 @@ Close closes the transport the manager is using.
 #### func (*Manager) Closed
 
 ```go
-func (m *Manager) Closed() bool
+func (m *Manager) Closed() <-chan struct{}
 ```
-Closed returns if the manager has been closed.
+Closed returns a channel that is closed once the manager is closed.
 
 #### func (*Manager) NewClientStream
 
@@ -63,6 +63,13 @@ NewServerStream starts a stream on the managed transport for use by a server. It
 does this by waiting for the client to issue an invoke message and returning the
 details.
 
+#### func (*Manager) String
+
+```go
+func (m *Manager) String() string
+```
+String returns a string representation of the manager.
+
 #### type Options
 
 ```go
@@ -73,6 +80,12 @@ type Options struct {
 
 	// Stream are passed to any streams the manager creates.
 	Stream drpcstream.Options
+
+	// InactivityTimeout is the amount of time the manager will wait when creating
+	// a NewServerStream. It only includes the time it is reading packets from the
+	// remote client. In other words, it only includes the time that the client
+	// could delay before invoking an RPC. If zero or negative, no timeout is used.
+	InactivityTimeout time.Duration
 }
 ```
 

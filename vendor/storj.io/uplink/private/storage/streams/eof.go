@@ -3,7 +3,10 @@
 
 package streams
 
-import "io"
+import (
+	"errors"
+	"io"
+)
 
 // EOFReader holds reader and status of EOF.
 type EOFReader struct {
@@ -19,7 +22,7 @@ func NewEOFReader(r io.Reader) *EOFReader {
 
 func (r *EOFReader) Read(p []byte) (n int, err error) {
 	n, err = r.reader.Read(p)
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		r.eof = true
 	} else if err != nil && r.err == nil {
 		r.err = err
@@ -27,10 +30,12 @@ func (r *EOFReader) Read(p []byte) (n int, err error) {
 	return n, err
 }
 
-func (r *EOFReader) isEOF() bool {
+// IsEOF returns true if EOF was returned during reading.
+func (r *EOFReader) IsEOF() bool {
 	return r.eof
 }
 
-func (r *EOFReader) hasError() bool {
+// HasError returns true if error was returned during reading.
+func (r *EOFReader) HasError() bool {
 	return r.err != nil
 }

@@ -28,10 +28,10 @@ var (
 )
 
 // ErrRevocation is used when an error occurs involving a certificate revocation.
-var ErrRevocation = errs.Class("revocation processing error")
+var ErrRevocation = errs.Class("revocation processing")
 
 // ErrRevocationDB is used when an error occurs involving the revocations database.
-var ErrRevocationDB = errs.Class("revocation database error")
+var ErrRevocationDB = errs.Class("revocation database")
 
 // ErrRevokedCert is used when a certificate in the chain is revoked and not expected to be.
 var ErrRevokedCert = ErrRevocation.New("a certificate in the chain is revoked")
@@ -119,10 +119,8 @@ func revocationChecker(opts *Options) HandlerFunc {
 
 func revocationUpdater(opts *Options) HandlerFunc {
 	return func(ext pkix.Extension, chains [][]*x509.Certificate) error {
-		if err := opts.RevocationDB.Put(context.TODO(), chains[0], ext); err != nil {
-			return err
-		}
-		return nil
+		err := opts.RevocationDB.Put(context.TODO(), chains[0], ext)
+		return err
 	}
 }
 
@@ -134,10 +132,8 @@ func (r Revocation) Verify(signingCert *x509.Certificate) error {
 	}
 
 	data := r.TBSBytes()
-	if err := pkcrypto.HashAndVerifySignature(pubKey, data, r.Signature); err != nil {
-		return err
-	}
-	return nil
+	err := pkcrypto.HashAndVerifySignature(pubKey, data, r.Signature)
+	return err
 }
 
 // TBSBytes (ToBeSigned) returns the hash of the revoked certificate key hash

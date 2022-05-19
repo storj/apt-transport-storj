@@ -23,10 +23,16 @@ func NewUnrestricted(secret []byte) (*Macaroon, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	return NewUnrestrictedFromParts(head, secret), nil
+}
+
+// NewUnrestrictedFromParts constructs an unrestricted Macaroon from the provided head and secret.
+func NewUnrestrictedFromParts(head, secret []byte) *Macaroon {
 	return &Macaroon{
 		head: head,
 		tail: sign(secret, head),
-	}, nil
+	}
 }
 
 func sign(secret []byte, data []byte) []byte {
@@ -83,6 +89,18 @@ func (m *Macaroon) Tails(secret []byte) [][]byte {
 		tails = append(tails, tail)
 	}
 	return tails
+}
+
+// ValidateAndTails combines Validate and Tails to a single method.
+func (m *Macaroon) ValidateAndTails(secret []byte) (bool, [][]byte) {
+	tails := make([][]byte, 0, len(m.caveats)+1)
+	tail := sign(secret, m.head)
+	tails = append(tails, tail)
+	for _, cav := range m.caveats {
+		tail = sign(tail, cav)
+		tails = append(tails, tail)
+	}
+	return subtle.ConstantTimeCompare(tail, m.tail) == 1, tails
 }
 
 // Head returns copy of macaroon head.

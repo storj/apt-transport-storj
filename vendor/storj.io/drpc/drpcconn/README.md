@@ -40,14 +40,14 @@ Close closes the connection.
 #### func (*Conn) Closed
 
 ```go
-func (c *Conn) Closed() bool
+func (c *Conn) Closed() <-chan struct{}
 ```
-Closed returns true if the connection is already closed.
+Closed returns a channel that is closed once the connection is closed.
 
 #### func (*Conn) Invoke
 
 ```go
-func (c *Conn) Invoke(ctx context.Context, rpc string, in, out drpc.Message) (err error)
+func (c *Conn) Invoke(ctx context.Context, rpc string, enc drpc.Encoding, in, out drpc.Message) (err error)
 ```
 Invoke issues the rpc on the transport serializing in, waits for a response, and
 deserializes it into out. Only one Invoke or Stream may be open at a time.
@@ -55,7 +55,7 @@ deserializes it into out. Only one Invoke or Stream may be open at a time.
 #### func (*Conn) NewStream
 
 ```go
-func (c *Conn) NewStream(ctx context.Context, rpc string) (_ drpc.Stream, err error)
+func (c *Conn) NewStream(ctx context.Context, rpc string, enc drpc.Encoding) (_ drpc.Stream, err error)
 ```
 NewStream begins a streaming rpc on the connection. Only one Invoke or Stream
 may be open at a time.

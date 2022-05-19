@@ -6,14 +6,21 @@ package uplink
 import (
 	"context"
 
+	"github.com/zeebo/errs"
+
 	"storj.io/common/storj"
+	"storj.io/uplink/private/metaclient"
+	"storj.io/uplink/private/testuplink"
 )
 
 // ListObjectsOptions defines object listing options.
 type ListObjectsOptions struct {
-	// Prefix allows to filter objects by a key prefix. If not empty, it must end with slash.
+	// Prefix allows to filter objects by a key prefix.
+	// If not empty, it must end with slash.
 	Prefix string
-	// Cursor sets the starting position of the iterator. The first item listed will be the one after the cursor.
+	// Cursor sets the starting position of the iterator.
+	// The first item listed will be the one after the cursor.
+	// Cursor is relative to Prefix.
 	Cursor string
 	// Recursive iterates the objects without collapsing prefixes.
 	Recursive bool
@@ -26,18 +33,22 @@ type ListObjectsOptions struct {
 
 // ListObjects returns an iterator over the objects.
 func (project *Project) ListObjects(ctx context.Context, bucket string, options *ListObjectsOptions) *ObjectIterator {
-	defer mon.Func().RestartTrace(&ctx)(nil)
+	defer mon.Task()(&ctx)(nil)
 
-	b := storj.Bucket{Name: bucket, PathCipher: storj.EncAESGCM}
-	opts := storj.ListOptions{
-		Direction: storj.After,
+	b := metaclient.Bucket{Name: bucket, PathCipher: storj.EncAESGCM}
+	opts := metaclient.ListOptions{
+		Direction: metaclient.After,
 	}
 
 	if options != nil {
 		opts.Prefix = options.Prefix
 		opts.Cursor = options.Cursor
 		opts.Recursive = options.Recursive
+		opts.IncludeCustomMetadata = options.Custom
+		opts.IncludeSystemMetadata = options.System
 	}
+
+	opts.Limit = testuplink.GetListLimit(ctx)
 
 	objects := ObjectIterator{
 		ctx:     ctx,
@@ -57,10 +68,10 @@ func (project *Project) ListObjects(ctx context.Context, bucket string, options 
 type ObjectIterator struct {
 	ctx        context.Context
 	project    *Project
-	bucket     storj.Bucket
-	options    storj.ListOptions
+	bucket     metaclient.Bucket
+	options    metaclient.ListOptions
 	objOptions ListObjectsOptions
-	list       *storj.ObjectList
+	list       *metaclient.ObjectList
 	position   int
 	completed  bool
 	err        error
@@ -96,17 +107,31 @@ func (objects *ObjectIterator) Next() bool {
 }
 
 func (objects *ObjectIterator) loadNext() bool {
-	list, err := objects.project.db.ListObjects(objects.ctx, objects.bucket, objects.options)
+	ok, err := objects.tryLoadNext()
 	if err != nil {
-		objects.err = convertKnownErrors(err, objects.bucket.Name, "")
+		objects.err = err
 		return false
+	}
+	return ok
+}
+
+func (objects *ObjectIterator) tryLoadNext() (ok bool, err error) {
+	db, err := objects.project.dialMetainfoDB(objects.ctx)
+	if err != nil {
+		return false, convertKnownErrors(err, objects.bucket.Name, "")
+	}
+	defer func() { err = errs.Combine(err, db.Close()) }()
+
+	list, err := db.ListObjects(objects.ctx, objects.bucket.Name, objects.options)
+	if err != nil {
+		return false, convertKnownErrors(err, objects.bucket.Name, "")
 	}
 	objects.list = &list
 	if list.More {
 		objects.options = objects.options.NextPage(list)
 	}
 	objects.position = 0
-	return len(list.Items) > 0
+	return len(list.Items) > 0, nil
 }
 
 // Err returns error, if one happened during iteration.
@@ -148,7 +173,7 @@ func (objects *ObjectIterator) Item() *Object {
 	return &obj
 }
 
-func (objects *ObjectIterator) item() *storj.Object {
+func (objects *ObjectIterator) item() *metaclient.Object {
 	if objects.completed {
 		return nil
 	}

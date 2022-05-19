@@ -7,47 +7,46 @@ import (
 	"context"
 	"io"
 
-	"storj.io/common/storj"
-	"storj.io/uplink/private/metainfo"
+	"storj.io/uplink/private/metaclient"
 	"storj.io/uplink/private/storage/streams"
 )
 
 // Download implements Reader, Seeker and Closer for reading from stream.
 type Download struct {
 	ctx     context.Context
-	stream  metainfo.ReadOnlyStream
-	streams streams.Store
+	info    metaclient.DownloadInfo
+	streams *streams.Store
 	reader  io.ReadCloser
 	offset  int64
-	limit   int64
+	length  int64
 	closed  bool
 }
 
 // NewDownload creates new stream download.
-func NewDownload(ctx context.Context, stream metainfo.ReadOnlyStream, streams streams.Store) *Download {
+func NewDownload(ctx context.Context, info metaclient.DownloadInfo, streams *streams.Store) *Download {
 	return &Download{
 		ctx:     ctx,
-		stream:  stream,
+		info:    info,
 		streams: streams,
-		limit:   stream.Info().Size,
+		length:  info.Object.Size,
 	}
 }
 
-// NewDownloadRange creates new stream range download with range from offset to offset+limit.
-func NewDownloadRange(ctx context.Context, stream metainfo.ReadOnlyStream, streams streams.Store, offset, limit int64) *Download {
-	size := stream.Info().Size
-	if offset > size {
-		offset = size
+// NewDownloadRange creates new stream range download with range from start to start+length.
+func NewDownloadRange(ctx context.Context, info metaclient.DownloadInfo, streams *streams.Store, start, length int64) *Download {
+	size := info.Object.Size
+	if start > size {
+		start = size
 	}
-	if limit < 0 || limit+offset > size {
-		limit = size - offset
+	if length < 0 || length+start > size {
+		length = size - start
 	}
 	return &Download{
 		ctx:     ctx,
-		stream:  stream,
+		info:    info,
 		streams: streams,
-		offset:  offset,
-		limit:   limit,
+		offset:  start,
+		length:  length,
 	}
 }
 
@@ -69,14 +68,14 @@ func (download *Download) Read(data []byte) (n int, err error) {
 		}
 	}
 
-	if download.limit <= 0 {
+	if download.length <= 0 {
 		return 0, io.EOF
 	}
-	if download.limit < int64(len(data)) {
-		data = data[:download.limit]
+	if download.length < int64(len(data)) {
+		data = data[:download.length]
 	}
 	n, err = download.reader.Read(data)
-	download.limit -= int64(n)
+	download.length -= int64(n)
 	download.offset += int64(n)
 
 	return n, err
@@ -105,14 +104,14 @@ func (download *Download) resetReader() error {
 		}
 	}
 
-	obj := download.stream.Info()
+	obj := download.info.Object
 
-	rr, err := download.streams.Get(download.ctx, storj.JoinPaths(obj.Bucket.Name, obj.Path), obj)
+	rr, err := download.streams.Get(download.ctx, obj.Bucket.Name, obj.Path, download.info)
 	if err != nil {
 		return err
 	}
 
-	download.reader, err = rr.Range(download.ctx, download.offset, download.limit)
+	download.reader, err = rr.Range(download.ctx, download.offset, download.length)
 	if err != nil {
 		return err
 	}

@@ -5,11 +5,12 @@ package drpcconn
 
 import (
 	"context"
+	"sync"
 
-	"github.com/gogo/protobuf/proto"
 	"github.com/zeebo/errs"
 
 	"storj.io/drpc"
+	"storj.io/drpc/drpcenc"
 	"storj.io/drpc/drpcmanager"
 	"storj.io/drpc/drpcmetadata"
 	"storj.io/drpc/drpcstream"
@@ -24,8 +25,10 @@ type Options struct {
 
 // Conn is a drpc client connection.
 type Conn struct {
-	tr  drpc.Transport
-	man *drpcmanager.Manager
+	tr   drpc.Transport
+	man  *drpcmanager.Manager
+	mu   sync.Mutex
+	wbuf []byte
 }
 
 var _ drpc.Conn = (*Conn)(nil)
@@ -49,8 +52,8 @@ func (c *Conn) Transport() drpc.Transport {
 	return c.tr
 }
 
-// Closed returns true if the connection is already closed.
-func (c *Conn) Closed() bool {
+// Closed returns a channel that is closed once the connection is closed.
+func (c *Conn) Closed() <-chan struct{} {
 	return c.man.Closed()
 }
 
@@ -61,12 +64,7 @@ func (c *Conn) Close() (err error) {
 
 // Invoke issues the rpc on the transport serializing in, waits for a response, and
 // deserializes it into out. Only one Invoke or Stream may be open at a time.
-func (c *Conn) Invoke(ctx context.Context, rpc string, in, out drpc.Message) (err error) {
-	defer mon.Task()(&ctx)(&err)
-	defer mon.TaskNamed("invoke" + rpc)(&ctx)(&err)
-	mon.Event("outgoing_requests")
-	mon.Event("outgoing_invokes")
-
+func (c *Conn) Invoke(ctx context.Context, rpc string, enc drpc.Encoding, in, out drpc.Message) (err error) {
 	var metadata []byte
 	if md, ok := drpcmetadata.Get(ctx); ok {
 		metadata, err = drpcmetadata.Encode(metadata, md)
@@ -75,30 +73,36 @@ func (c *Conn) Invoke(ctx context.Context, rpc string, in, out drpc.Message) (er
 		}
 	}
 
-	data, err := proto.Marshal(in)
-	if err != nil {
-		return errs.Wrap(err)
-	}
-
 	stream, err := c.man.NewClientStream(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errs.Combine(err, stream.Close()) }()
 
-	if err := c.doInvoke(stream, []byte(rpc), data, metadata, out); err != nil {
+	// we have to protect c.wbuf here even though the manager only allows one
+	// stream at a time because the stream may async close allowing another
+	// concurrent call to Invoke to proceed.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.wbuf, err = drpcenc.MarshalAppend(in, enc, c.wbuf[:0])
+	if err != nil {
+		return err
+	}
+
+	if err := c.doInvoke(stream, enc, rpc, c.wbuf, metadata, out); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (c *Conn) doInvoke(stream *drpcstream.Stream, rpc, data []byte, metadata []byte, out drpc.Message) (err error) {
+func (c *Conn) doInvoke(stream *drpcstream.Stream, enc drpc.Encoding, rpc string, data []byte, metadata []byte, out drpc.Message) (err error) {
 	if len(metadata) > 0 {
 		if err := stream.RawWrite(drpcwire.KindInvokeMetadata, metadata); err != nil {
 			return err
 		}
 	}
-	if err := stream.RawWrite(drpcwire.KindInvoke, rpc); err != nil {
+	if err := stream.RawWrite(drpcwire.KindInvoke, []byte(rpc)); err != nil {
 		return err
 	}
 	if err := stream.RawWrite(drpcwire.KindMessage, data); err != nil {
@@ -107,7 +111,7 @@ func (c *Conn) doInvoke(stream *drpcstream.Stream, rpc, data []byte, metadata []
 	if err := stream.CloseSend(); err != nil {
 		return err
 	}
-	if err := stream.MsgRecv(out); err != nil {
+	if err := stream.MsgRecv(out, enc); err != nil {
 		return err
 	}
 	return nil
@@ -115,12 +119,7 @@ func (c *Conn) doInvoke(stream *drpcstream.Stream, rpc, data []byte, metadata []
 
 // NewStream begins a streaming rpc on the connection. Only one Invoke or Stream may
 // be open at a time.
-func (c *Conn) NewStream(ctx context.Context, rpc string) (_ drpc.Stream, err error) {
-	defer mon.Task()(&ctx)(&err)
-	defer mon.TaskNamed("stream" + rpc)(&ctx)(&err)
-	mon.Event("outgoing_requests")
-	mon.Event("outgoing_streams")
-
+func (c *Conn) NewStream(ctx context.Context, rpc string, enc drpc.Encoding) (_ drpc.Stream, err error) {
 	var metadata []byte
 	if md, ok := drpcmetadata.Get(ctx); ok {
 		metadata, err = drpcmetadata.Encode(metadata, md)
@@ -134,19 +133,20 @@ func (c *Conn) NewStream(ctx context.Context, rpc string) (_ drpc.Stream, err er
 		return nil, err
 	}
 
-	if err := c.doNewStream(stream, []byte(rpc), metadata); err != nil {
+	if err := c.doNewStream(stream, rpc, metadata); err != nil {
 		return nil, errs.Combine(err, stream.Close())
 	}
+
 	return stream, nil
 }
 
-func (c *Conn) doNewStream(stream *drpcstream.Stream, rpc []byte, metadata []byte) error {
+func (c *Conn) doNewStream(stream *drpcstream.Stream, rpc string, metadata []byte) error {
 	if len(metadata) > 0 {
 		if err := stream.RawWrite(drpcwire.KindInvokeMetadata, metadata); err != nil {
 			return err
 		}
 	}
-	if err := stream.RawWrite(drpcwire.KindInvoke, rpc); err != nil {
+	if err := stream.RawWrite(drpcwire.KindInvoke, []byte(rpc)); err != nil {
 		return err
 	}
 	if err := stream.RawFlush(); err != nil {

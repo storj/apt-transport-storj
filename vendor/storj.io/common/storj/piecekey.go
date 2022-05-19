@@ -11,7 +11,7 @@ import (
 )
 
 // ErrPieceKey is used when something goes wrong with a piece key.
-var ErrPieceKey = errs.Class("piece key error")
+var ErrPieceKey = errs.Class("piece key")
 
 // PiecePublicKey is the unique identifier for pieces.
 type PiecePublicKey struct {
@@ -35,7 +35,9 @@ func PiecePublicKeyFromBytes(data []byte) (PiecePublicKey, error) {
 	if len(data) != ed25519.PublicKeySize {
 		return PiecePublicKey{}, ErrPieceKey.New("invalid public key length %v", len(data))
 	}
-	return PiecePublicKey{ed25519.PublicKey(data)}, nil
+	pub := make(ed25519.PublicKey, len(data))
+	copy(pub, data)
+	return PiecePublicKey{pub}, nil
 }
 
 // PiecePrivateKeyFromBytes converts bytes to a piece private key.
@@ -43,7 +45,9 @@ func PiecePrivateKeyFromBytes(data []byte) (PiecePrivateKey, error) {
 	if len(data) != ed25519.PrivateKeySize {
 		return PiecePrivateKey{}, ErrPieceKey.New("invalid private key length %v", len(data))
 	}
-	return PiecePrivateKey{ed25519.PrivateKey(data)}, nil
+	priv := make(ed25519.PrivateKey, len(data))
+	copy(priv, data)
+	return PiecePrivateKey{priv}, nil
 }
 
 // Sign signs the message with privateKey and returns a signature.
@@ -156,4 +160,19 @@ func (key *PiecePrivateKey) Scan(src interface{}) (err error) {
 	n, err := PiecePrivateKeyFromBytes(b)
 	*key = n
 	return err
+}
+
+// MarshalText serializes a piece public key to a base32 string.
+func (key *PiecePublicKey) MarshalText() ([]byte, error) {
+	text := base32Encoding.EncodeToString(key.Bytes())
+	return []byte(text), nil
+}
+
+// UnmarshalText deserializes a base32 string to a piece public key.
+func (key *PiecePublicKey) UnmarshalText(data []byte) error {
+	bytes, err := base32Encoding.DecodeString(string(data))
+	if err != nil {
+		return err
+	}
+	return key.Unmarshal(bytes)
 }

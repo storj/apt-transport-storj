@@ -13,7 +13,7 @@ import (
 
 	"github.com/zeebo/errs"
 
-	"storj.io/common/storj"
+	"storj.io/uplink/private/metaclient"
 )
 
 // ErrObjectKeyInvalid is returned when the object key is invalid.
@@ -80,10 +80,15 @@ func (meta CustomMetadata) Verify() error {
 
 // StatObject returns information about an object at the specific key.
 func (project *Project) StatObject(ctx context.Context, bucket, key string) (info *Object, err error) {
-	defer mon.Func().RestartTrace(&ctx)(&err)
+	defer mon.Task()(&ctx)(&err)
 
-	b := storj.Bucket{Name: bucket}
-	obj, err := project.db.GetObject(ctx, b, key)
+	db, err := project.dialMetainfoDB(ctx)
+	if err != nil {
+		return nil, convertKnownErrors(err, bucket, key)
+	}
+	defer func() { err = errs.Combine(err, db.Close()) }()
+
+	obj, err := db.GetObject(ctx, bucket, key)
 	if err != nil {
 		return nil, convertKnownErrors(err, bucket, key)
 	}
@@ -93,18 +98,47 @@ func (project *Project) StatObject(ctx context.Context, bucket, key string) (inf
 
 // DeleteObject deletes the object at the specific key.
 func (project *Project) DeleteObject(ctx context.Context, bucket, key string) (deleted *Object, err error) {
-	defer mon.Func().RestartTrace(&ctx)(&err)
+	defer mon.Task()(&ctx)(&err)
 
-	b := storj.Bucket{Name: bucket}
-	obj, err := project.db.DeleteObject(ctx, b, key)
+	db, err := project.dialMetainfoDB(ctx)
+	if err != nil {
+		return nil, convertKnownErrors(err, bucket, key)
+	}
+	defer func() { err = errs.Combine(err, db.Close()) }()
+
+	obj, err := db.DeleteObject(ctx, bucket, key)
 	if err != nil {
 		return nil, convertKnownErrors(err, bucket, key)
 	}
 	return convertObject(&obj), nil
 }
 
-// convertObject converts storj.Object to uplink.Object.
-func convertObject(obj *storj.Object) *Object {
+// UploadObjectMetadataOptions contains additional options for updating object's metadata.
+// Reserved for future use.
+type UploadObjectMetadataOptions struct {
+}
+
+// UpdateObjectMetadata replaces the custom metadata for the object at the specific key with newMetadata.
+// Any existing custom metadata will be deleted.
+func (project *Project) UpdateObjectMetadata(ctx context.Context, bucket, key string, newMetadata CustomMetadata, options *UploadObjectMetadataOptions) (err error) {
+	defer mon.Task()(&ctx)(&err)
+
+	db, err := project.dialMetainfoDB(ctx)
+	if err != nil {
+		return convertKnownErrors(err, bucket, key)
+	}
+	defer func() { err = errs.Combine(err, db.Close()) }()
+
+	err = db.UpdateObjectMetadata(ctx, bucket, key, newMetadata.Clone())
+	if err != nil {
+		return convertKnownErrors(err, bucket, key)
+	}
+
+	return nil
+}
+
+// convertObject converts metainfo.Object to uplink.Object.
+func convertObject(obj *metaclient.Object) *Object {
 	if obj.Bucket.Name == "" { // zero object
 		return nil
 	}

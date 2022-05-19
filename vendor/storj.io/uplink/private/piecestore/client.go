@@ -5,10 +5,11 @@ package piecestore
 
 import (
 	"context"
+	"errors"
 	"io"
+	"time"
 
 	"github.com/zeebo/errs"
-	"go.uber.org/zap"
 
 	"storj.io/common/identity"
 	"storj.io/common/memory"
@@ -17,44 +18,55 @@ import (
 	"storj.io/common/storj"
 )
 
-// Error is the default error class for piecestore client.
-var Error = errs.Class("piecestore")
+var errMessageTimeout = errors.New("message timeout")
+
+var (
+	// Error is the default error class for piecestore client.
+	Error = errs.Class("piecestore")
+
+	// CloseError is the error class used for errors generated during a
+	// stream close in a piecestore client.
+	//
+	// Errors of this type should also be wrapped with Error, for backwards
+	// compatibility.
+	CloseError = errs.Class("piecestore close")
+)
 
 // Config defines piecestore client parameters for upload and download.
 type Config struct {
-	UploadBufferSize   int64
 	DownloadBufferSize int64
 
 	InitialStep int64
 	MaximumStep int64
+
+	MessageTimeout time.Duration
 }
 
 // DefaultConfig are the default params used for upload and download.
 var DefaultConfig = Config{
-	UploadBufferSize:   256 * memory.KiB.Int64(),
 	DownloadBufferSize: 256 * memory.KiB.Int64(),
 
 	InitialStep: 64 * memory.KiB.Int64(),
-	MaximumStep: 1 * memory.MiB.Int64(),
+	MaximumStep: 256 * memory.KiB.Int64(),
+
+	MessageTimeout: 10 * time.Minute,
 }
 
 // Client implements uploading, downloading and deleting content from a piecestore.
 type Client struct {
-	log    *zap.Logger
 	client pb.DRPCPiecestoreClient
 	conn   *rpc.Conn
 	config Config
 }
 
-// DialNodeURL dials the target piecestore endpoint.
-func DialNodeURL(ctx context.Context, dialer rpc.Dialer, nodeURL storj.NodeURL, log *zap.Logger, config Config) (*Client, error) {
+// Dial dials the target piecestore endpoint.
+func Dial(ctx context.Context, dialer rpc.Dialer, nodeURL storj.NodeURL, config Config) (*Client, error) {
 	conn, err := dialer.DialNodeURL(ctx, nodeURL)
 	if err != nil {
 		return nil, Error.Wrap(err)
 	}
 
 	return &Client{
-		log:    log,
 		client: pb.NewDRPCPiecestoreClient(conn),
 		conn:   conn,
 		config: config,
@@ -90,7 +102,7 @@ func (client *Client) nextAllocationStep(previous int64) int64 {
 
 // ignoreEOF is an utility func for ignoring EOF error, when it's not important.
 func ignoreEOF(err error) error {
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		return nil
 	}
 	return err

@@ -67,15 +67,15 @@ func (s *Scope) newSource(name string, constructor func() StatSource) (
 	return ss
 }
 
-// FuncNamed retrieves or creates a Func named using the given name and
-// SeriesTags. See Func() for automatic name determination.
-//
-// Each unique combination of keys/values in each SeriesTag will result in a
-// unique Func. SeriesTags are not sorted, so keep the order consistent to avoid
-// unintentionally creating new unique Funcs.
-func (s *Scope) FuncNamed(name string, tags ...SeriesTag) *Func {
+func sourceName(namespace, name string, tags []SeriesTag) string {
+	var sourceNameSize int
+	sourceNameSize += len(namespace) + len(name) + len(tags)*2
+	for _, tag := range tags {
+		sourceNameSize += len(tag.Key) + len(tag.Val)
+	}
 	var sourceName strings.Builder
-	sourceName.WriteString("func:")
+	sourceName.Grow(sourceNameSize)
+	sourceName.WriteString(namespace)
 	sourceName.WriteString(name)
 	for _, tag := range tags {
 		sourceName.WriteByte(',')
@@ -83,12 +83,18 @@ func (s *Scope) FuncNamed(name string, tags ...SeriesTag) *Func {
 		sourceName.WriteByte('=')
 		sourceName.WriteString(tag.Val)
 	}
-	source := s.newSource(sourceName.String(), func() StatSource {
-		key := NewSeriesKey("function").WithTag("name", name)
-		for _, tag := range tags {
-			key = key.WithTag(tag.Key, tag.Val)
-		}
-		return newFunc(s, key)
+	return sourceName.String()
+}
+
+// FuncNamed retrieves or creates a Func named using the given name and
+// SeriesTags. See Func() for automatic name determination.
+//
+// Each unique combination of keys/values in each SeriesTag will result in a
+// unique Func. SeriesTags are not sorted, so keep the order consistent to avoid
+// unintentionally creating new unique Funcs.
+func (s *Scope) FuncNamed(name string, tags ...SeriesTag) *Func {
+	source := s.newSource(sourceName("func:", name, tags), func() StatSource {
+		return newFunc(s, NewSeriesKey("function").WithTag("name", name).WithTags(tags...))
 	})
 	f, ok := source.(*Func)
 	if !ok {
@@ -114,8 +120,10 @@ func (s *Scope) Funcs(cb func(f *Func)) {
 }
 
 // Meter retrieves or creates a Meter named after the given name. See Event.
-func (s *Scope) Meter(name string) *Meter {
-	source := s.newSource(name, func() StatSource { return NewMeter(NewSeriesKey(name)) })
+func (s *Scope) Meter(name string, tags ...SeriesTag) *Meter {
+	source := s.newSource(sourceName("", name, tags), func() StatSource {
+		return NewMeter(NewSeriesKey(name).WithTags(tags...))
+	})
 	m, ok := source.(*Meter)
 	if !ok {
 		panic(fmt.Sprintf("%s already used for another stats source: %#v",
@@ -126,15 +134,15 @@ func (s *Scope) Meter(name string) *Meter {
 
 // Event retrieves or creates a Meter named after the given name and then
 // calls Mark(1) on that meter.
-func (s *Scope) Event(name string) {
-	s.Meter(name).Mark(1)
+func (s *Scope) Event(name string, tags ...SeriesTag) {
+	s.Meter(name, tags...).Mark(1)
 }
 
 // DiffMeter retrieves or creates a DiffMeter after the given name and two
 // submeters.
-func (s *Scope) DiffMeter(name string, m1, m2 *Meter) {
-	source := s.newSource(name, func() StatSource {
-		return NewDiffMeter(NewSeriesKey(name), m1, m2)
+func (s *Scope) DiffMeter(name string, m1, m2 *Meter, tags ...SeriesTag) {
+	source := s.newSource(sourceName("", name, tags), func() StatSource {
+		return NewDiffMeter(NewSeriesKey(name).WithTags(tags...), m1, m2)
 	})
 	if _, ok := source.(*DiffMeter); !ok {
 		panic(fmt.Sprintf("%s already used for another stats source: %#v",
@@ -143,8 +151,10 @@ func (s *Scope) DiffMeter(name string, m1, m2 *Meter) {
 }
 
 // IntVal retrieves or creates an IntVal after the given name.
-func (s *Scope) IntVal(name string) *IntVal {
-	source := s.newSource(name, func() StatSource { return NewIntVal(NewSeriesKey(name)) })
+func (s *Scope) IntVal(name string, tags ...SeriesTag) *IntVal {
+	source := s.newSource(sourceName("", name, tags), func() StatSource {
+		return NewIntVal(NewSeriesKey(name).WithTags(tags...))
+	})
 	m, ok := source.(*IntVal)
 	if !ok {
 		panic(fmt.Sprintf("%s already used for another stats source: %#v",
@@ -160,8 +170,10 @@ func (s *Scope) IntValf(template string, args ...interface{}) *IntVal {
 }
 
 // FloatVal retrieves or creates a FloatVal after the given name.
-func (s *Scope) FloatVal(name string) *FloatVal {
-	source := s.newSource(name, func() StatSource { return NewFloatVal(NewSeriesKey(name)) })
+func (s *Scope) FloatVal(name string, tags ...SeriesTag) *FloatVal {
+	source := s.newSource(sourceName("", name, tags), func() StatSource {
+		return NewFloatVal(NewSeriesKey(name).WithTags(tags...))
+	})
 	m, ok := source.(*FloatVal)
 	if !ok {
 		panic(fmt.Sprintf("%s already used for another stats source: %#v",
@@ -177,8 +189,10 @@ func (s *Scope) FloatValf(template string, args ...interface{}) *FloatVal {
 }
 
 // BoolVal retrieves or creates a BoolVal after the given name.
-func (s *Scope) BoolVal(name string) *BoolVal {
-	source := s.newSource(name, func() StatSource { return NewBoolVal(NewSeriesKey(name)) })
+func (s *Scope) BoolVal(name string, tags ...SeriesTag) *BoolVal {
+	source := s.newSource(sourceName("", name, tags), func() StatSource {
+		return NewBoolVal(NewSeriesKey(name).WithTags(tags...))
+	})
 	m, ok := source.(*BoolVal)
 	if !ok {
 		panic(fmt.Sprintf("%s already used for another stats source: %#v",
@@ -194,8 +208,10 @@ func (s *Scope) BoolValf(template string, args ...interface{}) *BoolVal {
 }
 
 // StructVal retrieves or creates a StructVal after the given name.
-func (s *Scope) StructVal(name string) *StructVal {
-	source := s.newSource(name, func() StatSource { return NewStructVal(NewSeriesKey(name)) })
+func (s *Scope) StructVal(name string, tags ...SeriesTag) *StructVal {
+	source := s.newSource(sourceName("", name, tags), func() StatSource {
+		return NewStructVal(NewSeriesKey(name).WithTags(tags...))
+	})
 	m, ok := source.(*StructVal)
 	if !ok {
 		panic(fmt.Sprintf("%s already used for another stats source: %#v",
@@ -204,9 +220,24 @@ func (s *Scope) StructVal(name string) *StructVal {
 	return m
 }
 
+// DurationVal retrieves or creates a DurationVal after the given name.
+func (s *Scope) DurationVal(name string, tags ...SeriesTag) *DurationVal {
+	source := s.newSource(sourceName("", name, tags), func() StatSource {
+		return NewDurationVal(NewSeriesKey(name).WithTags(tags...))
+	})
+	m, ok := source.(*DurationVal)
+	if !ok {
+		panic(fmt.Sprintf("%s already used for another stats source: %#v",
+			name, source))
+	}
+	return m
+}
+
 // Timer retrieves or creates a Timer after the given name.
-func (s *Scope) Timer(name string) *Timer {
-	source := s.newSource(name, func() StatSource { return NewTimer(NewSeriesKey(name)) })
+func (s *Scope) Timer(name string, tags ...SeriesTag) *Timer {
+	source := s.newSource(sourceName("", name, tags), func() StatSource {
+		return NewTimer(NewSeriesKey(name).WithTags(tags...))
+	})
 	m, ok := source.(*Timer)
 	if !ok {
 		panic(fmt.Sprintf("%s already used for another stats source: %#v",
@@ -216,8 +247,10 @@ func (s *Scope) Timer(name string) *Timer {
 }
 
 // Counter retrieves or creates a Counter after the given name.
-func (s *Scope) Counter(name string) *Counter {
-	source := s.newSource(name, func() StatSource { return NewCounter(NewSeriesKey(name)) })
+func (s *Scope) Counter(name string, tags ...SeriesTag) *Counter {
+	source := s.newSource(sourceName("", name, tags), func() StatSource {
+		return NewCounter(NewSeriesKey(name).WithTags(tags...))
+	})
 	m, ok := source.(*Counter)
 	if !ok {
 		panic(fmt.Sprintf("%s already used for another stats source: %#v",
@@ -271,8 +304,12 @@ func (s *Scope) allNamedSources() (sources []namedSource) {
 
 // Stats implements the StatSource interface.
 func (s *Scope) Stats(cb func(key SeriesKey, field string, val float64)) {
+	cbWithScope := func(key SeriesKey, field string, val float64) {
+		cb(key.WithTag("scope", s.name), field, val)
+	}
+
 	for _, namedSource := range s.allNamedSources() {
-		namedSource.source.Stats(cb)
+		namedSource.source.Stats(cbWithScope)
 	}
 
 	s.mtx.Lock()
@@ -280,7 +317,7 @@ func (s *Scope) Stats(cb func(key SeriesKey, field string, val float64)) {
 	s.mtx.Unlock()
 
 	for _, source := range chains {
-		source.Stats(cb)
+		source.Stats(cbWithScope)
 	}
 }
 

@@ -12,7 +12,7 @@ import (
 
 	"storj.io/common/errs2"
 	"storj.io/common/rpc/rpcstatus"
-	"storj.io/common/storj"
+	"storj.io/uplink/private/metaclient"
 )
 
 // ErrBucketNameInvalid is returned when the bucket name is invalid.
@@ -35,9 +35,15 @@ type Bucket struct {
 
 // StatBucket returns information about a bucket.
 func (project *Project) StatBucket(ctx context.Context, bucket string) (info *Bucket, err error) {
-	defer mon.Func().RestartTrace(&ctx)(&err)
+	defer mon.Task()(&ctx)(&err)
 
-	b, err := project.db.GetBucket(ctx, bucket)
+	db, err := project.dialMetainfoDB(ctx)
+	if err != nil {
+		return nil, convertKnownErrors(err, bucket, "")
+	}
+	defer func() { err = errs.Combine(err, db.Close()) }()
+
+	b, err := db.GetBucket(ctx, bucket)
 	if err != nil {
 		return nil, convertKnownErrors(err, bucket, "")
 	}
@@ -52,12 +58,17 @@ func (project *Project) StatBucket(ctx context.Context, bucket string) (info *Bu
 //
 // When bucket already exists it returns a valid Bucket and ErrBucketExists.
 func (project *Project) CreateBucket(ctx context.Context, bucket string) (created *Bucket, err error) {
-	defer mon.Func().RestartTrace(&ctx)(&err)
+	defer mon.Task()(&ctx)(&err)
 
-	b, err := project.db.CreateBucket(ctx, bucket)
-
+	db, err := project.dialMetainfoDB(ctx)
 	if err != nil {
-		if storj.ErrNoBucket.Has(err) {
+		return nil, convertKnownErrors(err, bucket, "")
+	}
+	defer func() { err = errs.Combine(err, db.Close()) }()
+
+	b, err := db.CreateBucket(ctx, bucket)
+	if err != nil {
+		if metaclient.ErrNoBucket.Has(err) {
 			return nil, errwrapf("%w (%q)", ErrBucketNameInvalid, bucket)
 		}
 		if errs2.IsRPC(err, rpcstatus.AlreadyExists) {
@@ -67,6 +78,9 @@ func (project *Project) CreateBucket(ctx context.Context, bucket string) (create
 				return existing, errs.Combine(errwrapf("%w (%q)", ErrBucketAlreadyExists, bucket), convertKnownErrors(err, bucket, ""))
 			}
 			return existing, errwrapf("%w (%q)", ErrBucketAlreadyExists, bucket)
+		}
+		if errs2.IsRPC(err, rpcstatus.InvalidArgument) {
+			return nil, errwrapf("%w (%q)", ErrBucketNameInvalid, bucket)
 		}
 		return nil, convertKnownErrors(err, bucket, "")
 	}
@@ -81,7 +95,7 @@ func (project *Project) CreateBucket(ctx context.Context, bucket string) (create
 //
 // When bucket already exists it returns a valid Bucket and no error.
 func (project *Project) EnsureBucket(ctx context.Context, bucket string) (ensured *Bucket, err error) {
-	defer mon.Func().RestartTrace(&ctx)(&err)
+	defer mon.Task()(&ctx)(&err)
 
 	ensured, err = project.CreateBucket(ctx, bucket)
 	if err != nil && !errors.Is(err, ErrBucketAlreadyExists) {
@@ -95,9 +109,15 @@ func (project *Project) EnsureBucket(ctx context.Context, bucket string) (ensure
 //
 // When bucket is not empty it returns ErrBucketNotEmpty.
 func (project *Project) DeleteBucket(ctx context.Context, bucket string) (deleted *Bucket, err error) {
-	defer mon.Func().RestartTrace(&ctx)(&err)
+	defer mon.Task()(&ctx)(&err)
 
-	existing, err := project.db.DeleteBucket(ctx, bucket)
+	db, err := project.dialMetainfoDB(ctx)
+	if err != nil {
+		return nil, convertKnownErrors(err, bucket, "")
+	}
+	defer func() { err = errs.Combine(err, db.Close()) }()
+
+	existing, err := db.DeleteBucket(ctx, bucket, false)
 	if err != nil {
 		if errs2.IsRPC(err, rpcstatus.FailedPrecondition) {
 			return nil, errwrapf("%w (%q)", ErrBucketNotEmpty, bucket)
@@ -105,7 +125,34 @@ func (project *Project) DeleteBucket(ctx context.Context, bucket string) (delete
 		return nil, convertKnownErrors(err, bucket, "")
 	}
 
-	if existing == (storj.Bucket{}) {
+	// TODO add IsZero to storj.Bucket implementation
+	if existing.ID.IsZero() && len(existing.Name) == 0 {
+		return nil, nil
+	}
+
+	return &Bucket{
+		Name:    existing.Name,
+		Created: existing.Created,
+	}, nil
+}
+
+// DeleteBucketWithObjects deletes a bucket and all objects within that bucket.
+func (project *Project) DeleteBucketWithObjects(ctx context.Context, bucket string) (deleted *Bucket, err error) {
+	defer mon.Task()(&ctx)(&err)
+
+	db, err := project.dialMetainfoDB(ctx)
+	if err != nil {
+		return nil, convertKnownErrors(err, bucket, "")
+	}
+	defer func() { err = errs.Combine(err, db.Close()) }()
+
+	existing, err := db.DeleteBucket(ctx, bucket, true)
+	if err != nil {
+		return nil, convertKnownErrors(err, bucket, "")
+	}
+
+	// TODO add IsZero to storj.Bucket implementation
+	if existing.ID.IsZero() && len(existing.Name) == 0 {
 		return nil, nil
 	}
 

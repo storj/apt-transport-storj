@@ -80,6 +80,7 @@ func main() {
 		_, _ = os.Stderr.Write([]byte("Could not initialize logging: " + err.Error() + "\n"))
 		os.Exit(1)
 	}
+	defer func() { _ = logger.Sync() }()
 
 	err = mirroring.SyncMirror(ctx, logger, *upstreamMirror, *upstreamPath, *accessString, *bucket, *localDir, *dryRun, *progress)
 	if err != nil {

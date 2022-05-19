@@ -7,8 +7,6 @@ package telemetryclient
 
 import (
 	"context"
-
-	"go.uber.org/zap"
 )
 
 type contextKey int
@@ -16,12 +14,11 @@ type contextKey int
 const constructorKey contextKey = iota
 
 // Constructor creates a new telemetry client.
-type Constructor func(log *zap.Logger, satelliteAddress string) (Client, error)
+type Constructor func(satelliteAddress string) (Client, error)
 
 // Client is the common interface for telemetry.
 type Client interface {
 	Run(ctx context.Context)
-	Stop()
 	Report(ctx context.Context) error
 }
 

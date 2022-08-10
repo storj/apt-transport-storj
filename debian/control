@@ -2,18 +2,27 @@ Source: apt-transport-storj
 Section: admin
 Priority: optional
 Maintainer: paul cannon <pik@debian.org>
-Build-Depends: debhelper-compat (= 12),
+Build-Depends: debhelper-compat (= 13),
                dh-golang,
-               golang-go (>= 1.13),
+               golang-go (>= 1.18),
+               golang-github-stretchr-testify-dev,
+               golang-go.uber-atomic-dev,
+               golang-go.uber-multierr-dev,
                golang-go.uber-zap-dev,
                golang-golang-x-sync-dev,
                golang-golang-x-sys-dev,
+               golang-pault-go-debian-dev,
+               golang-pault-go-topsort-dev,
                golang-golang-x-crypto-dev,
                golang-github-gogo-protobuf-dev,
-               golang-github-minio-sha256-simd-dev,
-               golang-github-stretchr-testify-dev
-Standards-Version: 4.5.0
-XS-Go-Import-Path: storj.io/apt-transport-storj
+               golang-gopkg-yaml.v3-dev,
+               golang-github-datadog-zstd-dev,
+               golang-github-davecgh-go-spew-dev,
+               golang-github-kjk-lzma-dev,
+               golang-github-pmezard-go-difflib-dev,
+               golang-github-xi2-xz-dev
+Standards-Version: 4.6.0
+Go-Import-Path: storj.io/apt-transport-storj
 Homepage: https://github.com/storj/apt-transport-storj
 
 Package: apt-transport-storj
@@ -25,7 +34,3 @@ Description: APT transport using the Storj network
  package lists and packages via the Storj network (storj.io). Storj
  provides reliable, secure, fast online storage via a distributed
  network of individual providers.
- .
- Public Debian and Ubuntu mirrors are provided by Tardigrade.io, a
- supplier of high-quality node coordination points ("satellites") and
- inexpensive storage on the Storj network.

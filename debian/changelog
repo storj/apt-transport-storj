@@ -2,6 +2,7 @@ apt-transport-storj (0.0.4) UNRELEASED; urgency=low
 
   * Updated libuplink
   * Sync logger on exit
+  * Unvendored golang dependencies that are now packaged as debs
 
  -- paul cannon <pik@debian.org>  Thu, 19 May 2022 17:26:42 -0500
 

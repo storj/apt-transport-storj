@@ -21,7 +21,7 @@ Build-Depends: debhelper-compat (= 13),
                golang-github-kjk-lzma-dev,
                golang-github-pmezard-go-difflib-dev,
                golang-github-xi2-xz-dev
-Standards-Version: 4.6.0
+Standards-Version: 4.6.1.0
 XS-Go-Import-Path: storj.io/apt-transport-storj
 Homepage: https://github.com/storj/apt-transport-storj
 

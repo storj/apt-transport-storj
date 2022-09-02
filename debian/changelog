@@ -1,3 +1,9 @@
+apt-transport-storj (0.0.4~ubuntu22.04) jammy; urgency=low
+
+  * Backport build on Ubuntu 22.04 Jammy Jellyfish
+
+ -- paul cannon <pik@debian.org>  Thu, 01 Sep 2022 22:57:11 -0500
+
 apt-transport-storj (0.0.4) UNRELEASED; urgency=low
 
   * Updated libuplink
